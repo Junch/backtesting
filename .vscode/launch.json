@@ -1,0 +1,25 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+    {
+      "name": "Python: Streamlit",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "streamlit",
+      "args": [
+        "run",
+        "${file}", // 调试当前文件；或指定如 "${workspaceFolder}/your_script.py"
+        "--server.address",
+        "127.0.0.1",
+        "--server.port",
+        "6006" // 可自定义端口
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false // 建议为 true，避免进入库文件
+    }
+    ]
+}
