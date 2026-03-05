@@ -278,7 +278,7 @@ class DateStrategy(bt.Strategy):
         if self.p.log_file is None:
             # 默认使用当前时间戳作为日志文件名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.log_file = f"backtest_log_{timestamp}.log"
+            self.log_file = os.path.join("log", f"backtest_log_{timestamp}.log")
         else:
             self.log_file = self.p.log_file
             
