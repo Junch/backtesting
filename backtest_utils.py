@@ -501,7 +501,9 @@ def plot_strategy_performance(
             date_strings.append("")
 
     # 计算策略收益率
-    portfolio_returns = [(v / portfolio_values[0] - 1) * 100 for v in portfolio_values]
+    portfolio_returns = [
+        round((v / portfolio_values[0] - 1) * 100, 2) for v in portfolio_values
+    ]
 
     # 获取指定指数数据进行对比
     try:
@@ -510,7 +512,7 @@ def plot_strategy_performance(
         if not index_df.empty:
             initial_index_price = index_df.iloc[0]["close"]
             index_returns = [
-                (v / initial_index_price - 1) * 100 for v in index_df["close"]
+                round((v / initial_index_price - 1) * 100, 2) for v in index_df["close"]
             ]
             index_dates = [dt.strftime("%Y-%m-%d") for dt in index_df.index]
 
