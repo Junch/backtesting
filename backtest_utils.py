@@ -324,29 +324,37 @@ class DateStrategy(bt.Strategy):
         if date0 in self.sell_dates.keys():
             stock_list = self.sell_dates[date0]
             for stock_code in stock_list:
-                # 找到对应的数据对象
                 data_obj = self.find_data_by_stock_code(stock_code)
-                if data_obj:
+                if data_obj and self._is_tradeable(data_obj):
                     self.close(data=data_obj)
-                    # 清理止损相关记录
                     if data_obj in self.stop_orders:
                         del self.stop_orders[data_obj]
                     if data_obj in self.entry_prices:
                         del self.entry_prices[data_obj]
                     if data_obj in self.highest_prices:
                         del self.highest_prices[data_obj]
+                elif data_obj and not self._is_tradeable(data_obj):
+                    self.log(f"跳过卖出 {stock_code}: 当日停牌或不tradeable")
 
         # 3. 执行买入操作（调仓买入）
         if date0 in self.buy_dates.keys():
             stock_list = self.buy_dates[date0]
             for stock_code in stock_list:
-                # 找到对应的数据对象
                 data_obj = self.find_data_by_stock_code(stock_code)
-                if data_obj:
-                    # 执行买入
+                if data_obj and self._is_tradeable(data_obj):
                     order = self.order_target_percent(
                         data=data_obj, target=0.9 / len(stock_list)
                     )
+                elif data_obj and not self._is_tradeable(data_obj):
+                    self.log(f"跳过买入 {stock_code}: 当日停牌或不可交易")
+
+    def _is_tradeable(self, data_obj):
+        """检查股票是否可交易（volume > 0）"""
+        try:
+            volume = data_obj.volume[0]
+            return volume is not None and volume > 0
+        except:
+            return True
 
     def find_data_by_stock_code(self, stock_code):
         """根据股票代码找到对应的数据对象"""
@@ -504,6 +512,24 @@ def plot_strategy_performance(
     portfolio_returns = [
         round((v / portfolio_values[0] - 1) * 100, 2) for v in portfolio_values
     ]
+
+    # 检测单日收益异常（阈值10%）
+    anomaly_threshold = 10.0
+    anomalies = []
+    for i in range(1, len(portfolio_returns)):
+        daily_return = portfolio_returns[i] - portfolio_returns[i - 1]
+        if abs(daily_return) > anomaly_threshold:
+            date_str = date_strings[i] if i < len(date_strings) else f"Index-{i}"
+            anomalies.append(
+                (date_str, daily_return, portfolio_returns[i - 1], portfolio_returns[i])
+            )
+
+    if anomalies:
+        st.warning("检测到单日收益异常 (>10%), 可能是数据问题:")
+        for date_str, daily_ret, prev_ret, curr_ret in anomalies:
+            st.warning(
+                f"  {date_str}: {prev_ret:.2f}% -> {curr_ret}% (日涨幅 {daily_ret:+.2f}%)"
+            )
 
     # 获取指定指数数据进行对比
     try:

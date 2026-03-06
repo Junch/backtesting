@@ -319,10 +319,12 @@ def run_single_factor_backtesting(
         if i + 1 >= len_all_trade_dates:
             break
 
-        # 获取下一交易日停牌的股票代码
+        # 获取下一交易日停牌的股票代码（volume为0或NaN都视为停牌）
         date_next = all_trade_dates[i + 1].date()
         next_day_df = df[df["trade_date"] == date_next][["stock_code", "volume"]]
-        halted_stocks = next_day_df[next_day_df["volume"].isna()]["stock_code"].tolist()
+        halted_stocks = next_day_df[
+            (next_day_df["volume"].isna()) | (next_day_df["volume"] <= 0)
+        ]["stock_code"].tolist()
 
         # 选择下一交易日可以交易的股票
         valid_stocks = df[
@@ -497,14 +499,10 @@ def main():
 
                 # 添加股票数据到回测引擎
                 for stock in stock_list:
-                    df_stock = (
-                        df[
-                            (df["stock_code"] == stock)
-                            & (df["trade_date"].isin(all_trade_dates))
-                        ]
-                        .bfill()
-                        .set_index("trade_date")
-                    )
+                    df_stock = df[
+                        (df["stock_code"] == stock)
+                        & (df["trade_date"].isin(all_trade_dates))
+                    ].set_index("trade_date")
                     # 确保数据列名符合backtrader的要求
                     data = bt.feeds.PandasData(
                         dataname=df_stock,

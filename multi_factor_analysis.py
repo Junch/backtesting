@@ -677,14 +677,10 @@ def main():
 
                 # 添加股票数据到回测引擎
                 for stock in stock_list:
-                    df_stock = (
-                        df[
-                            (df["stock_code"] == stock)
-                            & (df["trade_date"].isin(all_trade_dates))
-                        ]
-                        .bfill()
-                        .set_index("trade_date")
-                    )
+                    df_stock = df[
+                        (df["stock_code"] == stock)
+                        & (df["trade_date"].isin(all_trade_dates))
+                    ].set_index("trade_date")
                     # 确保数据列名符合backtrader的要求
                     data = bt.feeds.PandasData(
                         dataname=df_stock,
