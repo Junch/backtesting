@@ -206,12 +206,8 @@ class MultiFactorCalculator:
         for factor_name, factor_calculator in self.factor_calculators.items():
             factor_col = factor_calculator.get_factor_column()
             if factor_col in factor_columns:
-                # 考虑因子的排序方向，如果是升序排列（小值更好），权重为正；
-                # 如果是降序排列（大值更好），权重也为正，因为我们要让好的股票得到更高的复合因子值
-                # 但为了统一排序方向，我们需要调整权重符号
                 weight = self.factor_weights[factor_name]
                 if factor_calculator.ascending:
-                    # 升序因子（小值更好），需要取负权重，这样小值对应更大的复合因子值
                     weight = -weight
                 weights.append(weight)
                 weight_factor_names.append(factor_col)
@@ -654,7 +650,10 @@ def main():
 
                 # 加载股票数据
                 st.info(f"正在加载{sector_name}板块股票数据...")
-                findata = LocalData("C:/github/cjdata/data/stock_data_hfq.db")
+                db_path = os.environ.get(
+                    "STOCK_DATA_DB", "C:/github/cjdata/data/stock_data_hfq.db"
+                )
+                findata = LocalData(db_path)
                 # 取start_date前60个交易日的数据用于计算因子
                 pre_start_date = (start_date - pd.Timedelta(days=60)).strftime("%Y%m%d")
                 df = findata.get_stock_data_frame_in_sector(

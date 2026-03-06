@@ -79,11 +79,11 @@ class MarketValueFactor(FactorCalculator):
         """
         df = df.copy()
 
-        print(df.columns)
-
         if "tradestatus" in df.columns:
-            # 在交易日，根据交易量和换手率计算总市值
-            df.loc[df["tradestatus"] == 1, "market"] = df["amount"] / df["turn"] / 1e8
+            valid_turn = df["turn"] != 0
+            df.loc[(df["tradestatus"] == 1) & valid_turn, "market"] = (
+                df["amount"] / df["turn"] / 1e8
+            )
         else:
             raise ValueError("输入数据缺少 'turn' 列，无法计算市值")
 
@@ -470,8 +470,10 @@ def main():
 
                 # 加载股票数据
                 st.info(f"正在加载{sector_name}板块股票数据...")
-                # db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "qmt", "stock_data_hfq.db")
-                findata = LocalData("C:/github/cjdata/data/stock_data_hfq.db")
+                db_path = os.environ.get(
+                    "STOCK_DATA_DB", "C:/github/cjdata/data/stock_data_hfq.db"
+                )
+                findata = LocalData(db_path)
                 # 取start_date前60个交易日的数据用于计算因子
                 pre_start_date = (start_date - pd.Timedelta(days=60)).strftime("%Y%m%d")
                 df = findata.get_stock_data_frame_in_sector(
