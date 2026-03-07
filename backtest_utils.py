@@ -325,7 +325,8 @@ class DateStrategy(bt.Strategy):
             stock_list = self.sell_dates[date0]
             for stock_code in stock_list:
                 data_obj = self.find_data_by_stock_code(stock_code)
-                if data_obj and self._is_tradeable(data_obj):
+                is_tradeable = self._is_tradeable(data_obj) if data_obj else False
+                if data_obj and is_tradeable:
                     self.close(data=data_obj)
                     if data_obj in self.stop_orders:
                         del self.stop_orders[data_obj]
@@ -333,20 +334,19 @@ class DateStrategy(bt.Strategy):
                         del self.entry_prices[data_obj]
                     if data_obj in self.highest_prices:
                         del self.highest_prices[data_obj]
-                elif data_obj and not self._is_tradeable(data_obj):
-                    self.log(f"跳过卖出 {stock_code}: 当日停牌或不tradeable")
+                elif data_obj and not is_tradeable:
+                    self.log(f"跳过卖出 {stock_code}: 执行日停牌或不可交易, 不补单")
 
         # 3. 执行买入操作（调仓买入）
         if date0 in self.buy_dates.keys():
             stock_list = self.buy_dates[date0]
             for stock_code in stock_list:
                 data_obj = self.find_data_by_stock_code(stock_code)
-                if data_obj and self._is_tradeable(data_obj):
-                    order = self.order_target_percent(
-                        data=data_obj, target=0.9 / len(stock_list)
-                    )
-                elif data_obj and not self._is_tradeable(data_obj):
-                    self.log(f"跳过买入 {stock_code}: 当日停牌或不可交易")
+                is_tradeable = self._is_tradeable(data_obj) if data_obj else False
+                if data_obj and is_tradeable:
+                    self.order_target_percent(data=data_obj, target=0.9 / len(stock_list))
+                elif data_obj and not is_tradeable:
+                    self.log(f"跳过买入 {stock_code}: 执行日停牌或不可交易, 不补单")
 
     def _is_tradeable(self, data_obj):
         """检查股票是否可交易（volume > 0）"""

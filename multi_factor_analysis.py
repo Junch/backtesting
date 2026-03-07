@@ -318,15 +318,9 @@ def run_multi_factor_backtesting(
         if i + 1 >= len_all_trade_dates:
             break
 
-        # 获取下一交易日停牌的股票代码
-        date_next = all_trade_dates[i + 1].date()
-        next_day_df = df[df["trade_date"] == date_next][["stock_code", "volume"]]
-        halted_stocks = next_day_df[next_day_df["volume"].isna()]["stock_code"].tolist()
-
-        # 选择下一交易日可以交易的股票
+        # 仅使用当日可见信息生成信号，避免读取下一交易日数据导致前视偏差
         valid_stocks = df[
             (df["trade_date"] == all_trade_dates[i])
-            & (df["stock_code"].isin(halted_stocks) == False)
             & (df[composite_factor_col].notna())
         ]  # 过滤掉复合因子值为空的股票
 
@@ -592,6 +586,10 @@ def main():
         else:
             st.sidebar.info("固定止损：从买入价下跌超过止损比例时卖出")
 
+    st.sidebar.caption(
+        "执行规则: t日生成调仓信号, 下一根K线执行。执行日若停牌/不可交易则跳过, 且不补单。"
+    )
+
     # 主界面展示区域
     col1, col2 = st.columns([2, 1])
 
@@ -821,6 +819,9 @@ def main():
                     st.write(f"- 持有股票数量: {hold_top} 只")
                     st.write(f"- 手续费率: 0.1%")
                     st.write(f"- 因子标准化: {'是' if standardize_factors else '否'}")
+                    st.write(
+                        "- 执行规则: t日生成信号, 下一根K线执行; 执行日不可交易则跳过且不补单"
+                    )
 
                     # 显示因子权重配置
                     st.write("**因子权重配置:**")
