@@ -272,13 +272,28 @@ def _render_holdings_for_date(
             cash = day_equity.iloc[0]["cash"]
             market_val = day_equity.iloc[0]["market_value"]
             total_asset = day_equity.iloc[0]["total_asset"]
+
+            prev_date = prev_dates[-2] if len(prev_dates) > 1 else None
+            day_pct_change = None
+            if prev_date:
+                prev_equity = equity_curve[equity_curve["trade_date"] == prev_date]
+                if not prev_equity.empty:
+                    prev_total = prev_equity.iloc[0]["total_asset"]
+                    if prev_total and prev_total != 0:
+                        day_pct_change = (total_asset - prev_total) / prev_total * 100
+
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.metric("现金", f"{cash:,.2f}")
             with c2:
                 st.metric("持仓市值", f"{market_val:,.2f}")
             with c3:
-                st.metric("总资产", f"{total_asset:,.2f}")
+                if day_pct_change is not None:
+                    st.metric(
+                        "总资产", f"{total_asset:,.2f}", delta=f"{day_pct_change:.2f}%"
+                    )
+                else:
+                    st.metric("总资产", f"{total_asset:,.2f}")
 
     if holding_df.empty:
         st.info("该日期无持仓。")
