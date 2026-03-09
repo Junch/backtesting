@@ -190,7 +190,7 @@ def calculate_quantile_statistics(df, n_quantiles):
         quantile_data = df[df["quantile"] == quantile]
 
         avg_return = quantile_data["returns"].mean()
-        avg_market_cap = quantile_data["market_cap"].mean() / 1e8
+        avg_market_cap = quantile_data["market_cap"].mean() / 1e6
         avg_turn = quantile_data["turn"].mean()
 
         # PE分析：区分盈利和亏损公司
@@ -285,7 +285,7 @@ def create_plotly_charts(df, n_quantiles, quantile_basis="收益率"):
     avg_market_caps = []
     for q in quantile_labels:
         quantile_data = df[df["quantile"] == q]
-        avg_cap = quantile_data["market_cap"].mean() / 1e8
+        avg_cap = quantile_data["market_cap"].mean() / 1e6
         avg_market_caps.append(avg_cap if not np.isnan(avg_cap) else 0)
 
     fig.add_trace(
@@ -609,7 +609,7 @@ def main():
                 ].copy()
 
                 # 转换市值为亿元，但保持数值类型用于排序
-                display_df["market_cap_billion"] = display_df["market_cap"] / 1e8
+                display_df["market_cap_billion"] = display_df["market_cap"] / 1e6
                 display_df = display_df.drop("market_cap", axis=1)
 
                 # 重命名列
@@ -690,7 +690,7 @@ def main():
                     ]
                 ].copy()
                 detail_df["returns_pct"] = detail_df["returns"] * 100
-                detail_df["market_cap_billion"] = detail_df["market_cap"] / 1e8
+                detail_df["market_cap_billion"] = detail_df["market_cap"] / 1e6
 
                 csv_detail = detail_df.to_csv(index=False, encoding="utf-8-sig")
                 st.download_button(

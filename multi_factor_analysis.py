@@ -20,6 +20,13 @@ from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from stock_filters import (
+    ListingAgeFilter,
+    MarketCapRangeFilter,
+    StockFilterContext,
+    StockFilterPipeline,
+)
+
 # 导入单因子计算器
 from single_factor_analysis import (
     FactorCalculator,
@@ -286,6 +293,8 @@ def run_multi_factor_backtesting(
     rebalance_period: int,
     hold_top: int,
     factor_params: Optional[Dict[str, Dict]] = None,
+    filter_pipeline: Optional[StockFilterPipeline] = None,
+    listed_dates: Optional[pd.Series] = None,
 ) -> Tuple[set, Dict, Dict]:
     """
     多因子回测数据处理函数
@@ -305,6 +314,12 @@ def run_multi_factor_backtesting(
     df = multi_factor_calculator.calculate(df, factor_params)
     composite_factor_col = multi_factor_calculator.get_factor_column()
 
+    first_trade_dates = (
+        df.loc[df["trade_date"].notna(), ["stock_code", "trade_date"]]
+        .groupby("stock_code")["trade_date"]
+        .min()
+    )
+
     buy_dates = {}
     sell_dates = {}
     position = set()
@@ -323,6 +338,15 @@ def run_multi_factor_backtesting(
             (df["trade_date"] == all_trade_dates[i])
             & (df[composite_factor_col].notna())
         ]  # 过滤掉复合因子值为空的股票
+
+        if filter_pipeline:
+            filter_context = StockFilterContext(
+                trade_date=all_trade_dates[i],
+                universe_df=df,
+                listed_dates=listed_dates,
+                first_trade_dates=first_trade_dates,
+            )
+            valid_stocks = filter_pipeline.apply(valid_stocks, filter_context)
 
         if not valid_stocks.empty:
             # 复合因子按降序排列（高值优先）
@@ -560,6 +584,40 @@ def main():
     )
     hold_top = st.sidebar.slider("持有股票数量", min_value=5, max_value=30, value=10)
 
+    # 前置过滤参数（可扩展）
+    st.sidebar.subheader("前置过滤")
+    filter_pipeline = StockFilterPipeline()
+
+    enable_market_cap_filter = st.sidebar.checkbox("启用市值范围过滤", value=False)
+    if enable_market_cap_filter:
+        col_mc1, col_mc2 = st.sidebar.columns(2)
+        with col_mc1:
+            min_market_cap = st.number_input(
+                "最小市值(亿元)", min_value=0.0, value=0.0, step=10.0
+            )
+        with col_mc2:
+            max_market_cap = st.number_input(
+                "最大市值(亿元)", min_value=0.0, value=2000.0, step=10.0
+            )
+        if max_market_cap < min_market_cap:
+            st.sidebar.warning("最大市值小于最小市值，将自动交换两者")
+            min_market_cap, max_market_cap = max_market_cap, min_market_cap
+        filter_pipeline.add_filter(
+            MarketCapRangeFilter(min_cap=min_market_cap, max_cap=max_market_cap)
+        )
+
+    listing_min_days = None
+    enable_listing_age_filter = st.sidebar.checkbox("启用上市时长过滤", value=False)
+    if enable_listing_age_filter:
+        listing_days_option = st.sidebar.selectbox(
+            "最短上市时长（自然日）",
+            options=[365, 730, 1095, 1460],
+            index=0,
+            help="365约等于1年，730约等于2年",
+        )
+        listing_min_days = int(listing_days_option)
+        filter_pipeline.add_filter(ListingAgeFilter(min_days=listing_min_days))
+
     # 因子标准化选项
     standardize_factors = st.sidebar.checkbox(
         "标准化因子值", value=True, help="对因子值进行标准化处理，消除量纲影响"
@@ -652,11 +710,34 @@ def main():
                     "STOCK_DATA_DB", "C:/github/cjdata/data/stock_data_hfq.db"
                 )
                 findata = LocalData(db_path)
-                # 取start_date前60个交易日的数据用于计算因子
-                pre_start_date = (start_date - pd.Timedelta(days=60)).strftime("%Y%m%d")
+                # 预留足够历史窗口用于因子计算和上市时长过滤
+                pre_lookback_days = 60
+                if listing_min_days is not None:
+                    pre_lookback_days = max(pre_lookback_days, listing_min_days + 30)
+
+                start_ts = pd.Timestamp(start_date)
+                pre_start_date = (
+                    start_ts - pd.Timedelta(days=pre_lookback_days)
+                ).strftime("%Y%m%d")
                 df = findata.get_stock_data_frame_in_sector(
                     sector_name, pre_start_date, end_str, adj="hfq"
                 )
+
+                listed_dates = None
+                if enable_listing_age_filter:
+                    basic_df = findata.get_stock_basic_by_sector(sector_name)
+                    if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
+                        if {
+                            "stock_code",
+                            "listed_date",
+                        }.issubset(basic_df.columns):
+                            listed_dates = (
+                                basic_df.dropna(subset=["stock_code"])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")["listed_date"]
+                            )
+                            listed_dates = pd.Series(listed_dates)
+
                 all_trade_dates = get_trading_days(df, start_date)
 
                 # 运行多因子回测
@@ -667,6 +748,8 @@ def main():
                     rebalance_period,
                     hold_top,
                     factor_params,
+                    filter_pipeline=filter_pipeline if filter_pipeline else None,
+                    listed_dates=listed_dates,
                 )
 
                 if not stock_list:
@@ -822,6 +905,18 @@ def main():
                     st.write(
                         "- 执行规则: t日生成信号, 下一根K线执行; 执行日不可交易则跳过且不补单"
                     )
+
+                    active_filters = filter_pipeline.get_filter_descriptions()
+                    if active_filters:
+                        st.write("**前置过滤条件:**")
+                        for filter_desc in active_filters:
+                            st.write(f"- {filter_desc}")
+                        if enable_listing_age_filter:
+                            st.write(
+                                "- 上市日期来源: stock_basic.listed_date(缺失时回退首个交易日)"
+                            )
+                    else:
+                        st.write("- 前置过滤: 未启用")
 
                     # 显示因子权重配置
                     st.write("**因子权重配置:**")
