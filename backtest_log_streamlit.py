@@ -311,6 +311,22 @@ def _render_holdings_for_date(
     )
     holding_df["stock_name"] = holding_df["stock_code"].map(stock_name_map)
 
+    prev_date = prev_dates[-2] if len(prev_dates) > 1 else None
+    prev_close_map = {}
+    if prev_date and prev_date in holdings_by_date:
+        prev_holding = holdings_by_date[prev_date]
+        if not prev_holding.empty:
+            prev_close_map = prev_holding.set_index("stock_code")["close"].to_dict()
+
+    def calc_pct_change(row):
+        code = row["stock_code"]
+        prev_close = prev_close_map.get(code)
+        if prev_close and prev_close != 0:
+            return (row["close"] - prev_close) / prev_close * 100
+        return None
+
+    holding_df["pct_change"] = holding_df.apply(calc_pct_change, axis=1)
+
     show_df = holding_df[
         [
             "stock_code",
@@ -318,6 +334,7 @@ def _render_holdings_for_date(
             "quantity",
             "avg_cost",
             "close",
+            "pct_change",
             "market_value",
             "weight",
             "unrealized_pnl",
@@ -329,6 +346,7 @@ def _render_holdings_for_date(
             {
                 "avg_cost": "{:.2f}",
                 "close": "{:.2f}",
+                "pct_change": "{:.2f}%",
                 "market_value": "{:,.2f}",
                 "weight": "{:.2%}",
                 "unrealized_pnl": "{:,.2f}",
