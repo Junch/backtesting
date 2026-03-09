@@ -246,6 +246,7 @@ def _render_holdings_for_date(
     query_date: date,
     holdings_by_date: dict[pd.Timestamp, pd.DataFrame],
     trades: pd.DataFrame,
+    equity_curve: pd.DataFrame,
 ) -> None:
     qd = pd.Timestamp(query_date)
     available_dates = sorted(holdings_by_date.keys())
@@ -264,6 +265,20 @@ def _render_holdings_for_date(
     st.write(
         f"查询日期: `{qd.date()}`，按最近交易日 `{effective_date.date()}` 显示持仓"
     )
+
+    if not equity_curve.empty:
+        day_equity = equity_curve[equity_curve["trade_date"] == effective_date]
+        if not day_equity.empty:
+            cash = day_equity.iloc[0]["cash"]
+            market_val = day_equity.iloc[0]["market_value"]
+            total_asset = day_equity.iloc[0]["total_asset"]
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("现金", f"{cash:,.2f}")
+            with c2:
+                st.metric("持仓市值", f"{market_val:,.2f}")
+            with c3:
+                st.metric("总资产", f"{total_asset:,.2f}")
 
     if holding_df.empty:
         st.info("该日期无持仓。")
@@ -465,7 +480,9 @@ def main() -> None:
         max_value=curve.iloc[-1]["trade_date"].date(),
     )
 
-    _render_holdings_for_date(query_date, replay.holdings_by_date, replay.trades)
+    _render_holdings_for_date(
+        query_date, replay.holdings_by_date, replay.trades, replay.equity_curve
+    )
 
     with st.expander("查看成交明细"):
         st.dataframe(
