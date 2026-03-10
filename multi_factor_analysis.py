@@ -1,6 +1,8 @@
 import backtrader as bt
 from datetime import datetime, timedelta
 import warnings
+import csv
+import io
 import re
 
 warnings.filterwarnings("ignore")
@@ -466,9 +468,9 @@ def _build_order_lines(
     ranked_df: pd.DataFrame,
     order_date: pd.Timestamp,
     quantity_column: str = "下单数量(股)",
-) -> List[str]:
-    """将候选股转换为 order.txt 格式行（无表头）。"""
-    lines: List[str] = []
+) -> List[List[str]]:
+    """将候选股转换为 order.csv 格式行（无表头）。"""
+    rows: List[List[str]] = []
     date_text = order_date.strftime("%Y-%m-%d")
 
     for _, row in ranked_df.iterrows():
@@ -484,9 +486,9 @@ def _build_order_lines(
             continue
 
         stock_name = str(row.get("stock_name", stock_code)).strip() or stock_code
-        lines.append(f"{date_text} 买入 {stock_code} {stock_name} {quantity}")
+        rows.append([date_text, "买入", stock_code, stock_name, str(quantity)])
 
-    return lines
+    return rows
 
 
 def _to_positive_float(value: object) -> Optional[float]:
@@ -1437,12 +1439,12 @@ def main():
                         )
                     ].copy()
 
-                    order_lines = _build_order_lines(
+                    order_rows = _build_order_lines(
                         executable_df,
                         next_trade_date,
                     )
 
-                    if not order_lines:
+                    if not order_rows:
                         st.error("未生成可下单记录，请检查实时价格或资金参数")
                         return
 
@@ -1458,20 +1460,23 @@ def main():
                         f"剩余资金: {remaining_amount:,.2f} 元"
                     )
 
-                    order_content = "\n".join(order_lines)
-                    order_file_path = os.path.join(os.path.dirname(__file__), "order.txt")
-                    with open(order_file_path, "w", encoding="utf-8") as f:
-                        f.write(order_content + "\n")
+                    order_buffer = io.StringIO()
+                    csv.writer(order_buffer, lineterminator="\n").writerows(order_rows)
+                    order_content = order_buffer.getvalue()
+
+                    order_file_path = os.path.join(os.path.dirname(__file__), "order.csv")
+                    with open(order_file_path, "w", newline="", encoding="utf-8") as f:
+                        csv.writer(f, lineterminator="\n").writerows(order_rows)
 
                     st.info(
-                        f"已生成次日买入清单，日期: {next_trade_date.strftime('%Y-%m-%d')}，共 {len(order_lines)} 条"
+                        f"已生成次日买入清单，日期: {next_trade_date.strftime('%Y-%m-%d')}，共 {len(order_rows)} 条"
                     )
                     st.code(order_content, language="text")
                     st.download_button(
-                        "⬇️ 下载 order.txt",
+                        "⬇️ 下载 order.csv",
                         data=order_content.encode("utf-8"),
-                        file_name="order.txt",
-                        mime="text/plain",
+                        file_name="order.csv",
+                        mime="text/csv",
                         width="stretch",
                     )
 

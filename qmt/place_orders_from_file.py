@@ -1,4 +1,5 @@
 import argparse
+import csv
 import datetime
 import math
 import os
@@ -129,20 +130,13 @@ def calculate_current_price(stock_code: str, direction: str) -> tuple[float, str
     raise ValueError(f"{stock_code} 无法获取有效实时价格")
 
 
-def parse_order_line(line: str, line_no: int) -> dict:
-    text = line.strip()
-    if not text:
-        raise ValueError("空行")
+def parse_order_line(row: list[str], line_no: int) -> dict:
+    cols = [str(col).strip() for col in row]
+    if len(cols) != 5:
+        raise ValueError(f"字段数量错误，需要5列，当前{len(cols)}列")
 
-    cols = re.split(r"\s+", text)
-    if len(cols) < 5:
-        raise ValueError(f"字段不足，至少需要5列，当前{len(cols)}列")
-
-    date_text = cols[0]
-    direction = cols[1]
-    stock_code = cols[2].upper()
-    stock_name = " ".join(cols[3:-1]).strip()
-    volume_text = cols[-1]
+    date_text, direction, stock_code, stock_name, volume_text = cols
+    stock_code = stock_code.upper()
 
     if direction not in {"买入", "卖出"}:
         raise ValueError(f"方向不合法: {direction}")
@@ -163,7 +157,7 @@ def parse_order_line(line: str, line_no: int) -> dict:
 
     return {
         "line_no": line_no,
-        "raw": text,
+        "raw": ",".join(cols),
         "date": date_text,
         "direction": direction,
         "stock_code": stock_code,
@@ -173,14 +167,15 @@ def parse_order_line(line: str, line_no: int) -> dict:
 
 
 def parse_orders(file_path: Path) -> list[dict]:
-    lines = file_path.read_text(encoding="utf-8").splitlines()
     orders: list[dict] = []
 
-    for idx, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        order = parse_order_line(line, idx)
-        orders.append(order)
+    with file_path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for idx, row in enumerate(reader, start=1):
+            if not row or not any(str(col).strip() for col in row):
+                continue
+            order = parse_order_line(row, idx)
+            orders.append(order)
 
     if not orders:
         raise ValueError("订单文件为空")
@@ -324,11 +319,11 @@ def execute_orders(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="根据order.txt批量下单（忽略日期）")
+    parser = argparse.ArgumentParser(description="根据order.csv批量下单（忽略日期）")
     parser.add_argument(
         "--file",
-        default="order.txt",
-        help="订单文件路径，默认: order.txt",
+        default="order.csv",
+        help="订单文件路径，默认: order.csv",
     )
     parser.add_argument(
         "--dry-run",

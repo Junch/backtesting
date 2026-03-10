@@ -79,7 +79,7 @@ streamlit run backtesting/multi_factor_analysis.py --server.address 127.0.0.1 --
 
 ### 4. 盘后选股与次日下单清单
 
-盘后选股页新增了资金分摊下单能力，用于生成可直接给 QMT 使用的 `order.txt`：
+盘后选股页新增了资金分摊下单能力，用于生成可直接给 QMT 使用的 `order.csv`：
 
 - **总资金(元)**：默认 240000，可自定义
 - **购买股票数量**：默认 12，可自定义

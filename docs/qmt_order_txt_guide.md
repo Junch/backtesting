@@ -1,8 +1,8 @@
-# miniQMT `order.txt` 批量下单说明
+# miniQMT `order.csv` 批量下单说明
 
 ## 功能概述
 
-脚本 `qmt/place_orders_from_file.py` 用于按 `order.txt` 批量提交股票委托，适合集合竞价阶段快速执行。
+脚本 `qmt/place_orders_from_file.py` 用于按 `order.csv` 批量提交股票委托，适合集合竞价阶段快速执行。
 
 - 忽略订单中的日期字段
 - 支持买入/卖出混合批量下单
@@ -19,7 +19,7 @@
 
 ## 订单文件格式
 
-默认读取项目根目录下的 `order.txt`，每行格式：
+默认读取项目根目录下的 `order.csv`，每行格式：
 
 ```text
 日期 动作 股票代码 股票名称 数量
@@ -39,13 +39,13 @@
 - 代码格式：`000001.SZ` / `600000.SH` / `430001.BJ`
 - 数量必须是正整数
 
-在 `multi_factor_analysis.py` 的盘后选股页中，`order.txt` 可由系统自动生成：
+在 `multi_factor_analysis.py` 的盘后选股页中，`order.csv` 可由系统自动生成：
 
 - 先按多因子排序选出前 N 只（N=购买股票数量）
 - 总资金平均分配到 N 只股票
 - 价格来自 xtdata 实时行情，优先 `askPrice1`，缺失时回退 `lastPrice`
 - 数量按 100 股整手向下取整
-- 预算不足 100 股或无有效价格的股票不会写入 `order.txt`
+- 预算不足 100 股或无有效价格的股票不会写入 `order.csv`
 
 ## 参数说明
 
@@ -53,7 +53,7 @@
 python qmt/place_orders_from_file.py [参数]
 ```
 
-- `--file`：订单文件路径，默认 `order.txt`
+- `--file`：订单文件路径，默认 `order.csv`
 - `--dry-run`：仅解析和计算价格，不实际下单
 - `--side {all,buy,sell}`：方向过滤，默认 `all`
 - `--on-error {continue,stop}`：单笔失败时行为，默认 `continue`
@@ -64,30 +64,30 @@ python qmt/place_orders_from_file.py [参数]
 1) 先演练，不下真实单：
 
 ```bash
-python qmt/place_orders_from_file.py --dry-run --file order.txt
+python qmt/place_orders_from_file.py --dry-run --file order.csv
 ```
 
 2) 只执行买单（集合竞价常用）：
 
 ```bash
-python qmt/place_orders_from_file.py --side buy --file order.txt
+python qmt/place_orders_from_file.py --side buy --file order.csv
 ```
 
 3) 只执行卖单：
 
 ```bash
-python qmt/place_orders_from_file.py --side sell --file order.txt
+python qmt/place_orders_from_file.py --side sell --file order.csv
 ```
 
 4) 遇到第一笔失败即停止后续：
 
 ```bash
-python qmt/place_orders_from_file.py --on-error stop --file order.txt
+python qmt/place_orders_from_file.py --on-error stop --file order.csv
 
 5) 使用当前市价模式：
 
 ```bash
-python qmt/place_orders_from_file.py --price-mode current --file order.txt
+python qmt/place_orders_from_file.py --price-mode current --file order.csv
 ```
 ```
 
@@ -121,4 +121,4 @@ python qmt/place_orders_from_file.py --price-mode current --file order.txt
 
 - 卖单被拒绝（可卖数量不足）
   - 脚本会按当前持仓可卖数量校验，避免超卖
-  - 请调整 `order.txt` 数量后重试
+  - 请调整 `order.csv` 数量后重试
