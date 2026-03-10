@@ -816,7 +816,7 @@ def main():
                 # 显示性能指标
                 st.subheader("📊 多因子策略性能指标")
 
-                col1, col2, col3, col4 = st.columns(4)
+                col1, col2, col3, col4, col5 = st.columns(5)
 
                 with col1:
                     total_return = (final_value / initial_value - 1) * 100
@@ -843,6 +843,15 @@ def main():
                         st.metric("最大回撤", "N/A")
 
                 with col4:
+                    try:
+                        max_dd_len = strat.analyzers.drawdown.get_analysis()["max"][
+                            "len"
+                        ]
+                        st.metric("最长回撤时间", f"{max_dd_len} 天")
+                    except:
+                        st.metric("最长回撤时间", "N/A")
+
+                with col5:
                     try:
                         annual_return = strat.analyzers.returns.get_analysis()[
                             "rnorm100"

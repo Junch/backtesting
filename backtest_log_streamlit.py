@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -382,7 +383,7 @@ def _render_holdings_for_date(
                 "unrealized_pnl": "{:,.2f}",
             }
         ),
-        width='stretch',
+        width="stretch",
     )
 
 
@@ -446,7 +447,7 @@ def main() -> None:
 
     curve = replay.equity_curve.copy()
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         total_return = curve.iloc[-1]["return_pct"]
         st.metric("总收益率", f"{total_return:.2f}%")
@@ -459,6 +460,22 @@ def main() -> None:
         ).max()
         st.metric("最大回撤", f"{max_drawdown * 100:.2f}%")
     with c4:
+        nav = curve["nav"].values
+        cummax = np.maximum.accumulate(nav)
+        drawdown_arr = (cummax - nav) / cummax
+        max_dd_len = 0
+        dd_start = None
+        for i in range(len(nav)):
+            if nav[i] >= cummax[i]:
+                if dd_start is not None:
+                    max_dd_len = max(max_dd_len, i - dd_start)
+                    dd_start = None
+            elif drawdown_arr[i] > 0 and dd_start is None:
+                dd_start = i
+        if dd_start is not None:
+            max_dd_len = max(max_dd_len, len(nav) - dd_start)
+        st.metric("最长回撤时间", f"{max_dd_len} 天")
+    with c5:
         st.metric("累计佣金", f"{curve.iloc[-1]['commission_cum']:,.2f}")
 
     fig = px.line(
@@ -469,7 +486,7 @@ def main() -> None:
         labels={"trade_date": "日期", "return_pct": "收益率(%)"},
     )
     fig.update_layout(height=460)
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, width="stretch")
 
     with st.expander("查看净值明细"):
         st.dataframe(
@@ -483,7 +500,7 @@ def main() -> None:
                     "commission_cum": "{:,.2f}",
                 }
             ),
-            width='stretch',
+            width="stretch",
         )
 
     st.subheader("日期持仓查询")
@@ -507,7 +524,7 @@ def main() -> None:
                     "commission": "{:.2f}",
                 }
             ),
-            width='stretch',
+            width="stretch",
         )
 
 
