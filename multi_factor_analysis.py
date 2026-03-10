@@ -764,19 +764,33 @@ def main():
                     )
 
                     listed_dates = None
-                    if enable_listing_age_filter:
-                        basic_df = findata.get_stock_basic_by_sector(sector_name)
-                        if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
-                            if {
-                                "stock_code",
-                                "listed_date",
-                            }.issubset(basic_df.columns):
-                                listed_dates = (
-                                    basic_df.dropna(subset=["stock_code"])
-                                    .drop_duplicates(subset=["stock_code"])
-                                    .set_index("stock_code")["listed_date"]
-                                )
-                                listed_dates = pd.Series(listed_dates)
+                    stock_name_map: Dict[str, str] = {}
+                    basic_df = findata.get_stock_basic_by_sector(sector_name)
+                    if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
+                        if {
+                            "stock_code",
+                            "listed_date",
+                        }.issubset(basic_df.columns) and enable_listing_age_filter:
+                            listed_dates = (
+                                basic_df.dropna(subset=["stock_code"])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")["listed_date"]
+                            )
+                            listed_dates = pd.Series(listed_dates)
+
+                        name_col = None
+                        for candidate_col in ["stock_name", "name", "sec_name"]:
+                            if candidate_col in basic_df.columns:
+                                name_col = candidate_col
+                                break
+                        if name_col is not None and "stock_code" in basic_df.columns:
+                            stock_name_map = (
+                                basic_df.dropna(subset=["stock_code", name_col])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")[name_col]
+                                .astype(str)
+                                .to_dict()
+                            )
 
                     all_trade_dates = get_trading_days(df, start_date)
 
@@ -1082,19 +1096,33 @@ def main():
                         return
 
                     listed_dates = None
-                    if enable_listing_age_filter:
-                        basic_df = findata.get_stock_basic_by_sector(sector_name)
-                        if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
-                            if {
-                                "stock_code",
-                                "listed_date",
-                            }.issubset(basic_df.columns):
-                                listed_dates = (
-                                    basic_df.dropna(subset=["stock_code"])
-                                    .drop_duplicates(subset=["stock_code"])
-                                    .set_index("stock_code")["listed_date"]
-                                )
-                                listed_dates = pd.Series(listed_dates)
+                    stock_name_map: Dict[str, str] = {}
+                    basic_df = findata.get_stock_basic_by_sector(sector_name)
+                    if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
+                        if enable_listing_age_filter and {
+                            "stock_code",
+                            "listed_date",
+                        }.issubset(basic_df.columns):
+                            listed_dates = (
+                                basic_df.dropna(subset=["stock_code"])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")["listed_date"]
+                            )
+                            listed_dates = pd.Series(listed_dates)
+
+                        name_col = None
+                        for candidate_col in ["stock_name", "name", "sec_name"]:
+                            if candidate_col in basic_df.columns:
+                                name_col = candidate_col
+                                break
+                        if name_col is not None and "stock_code" in basic_df.columns:
+                            stock_name_map = (
+                                basic_df.dropna(subset=["stock_code", name_col])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")[name_col]
+                                .astype(str)
+                                .to_dict()
+                            )
 
                     df = multi_factor_calculator.calculate(df, factor_params)
                     composite_col = multi_factor_calculator.get_factor_column()
@@ -1133,11 +1161,18 @@ def main():
                         int(top_n)
                     )
                     ranked_df = ranked_df.copy()
+                    if "stock_name" not in ranked_df.columns:
+                        ranked_df["stock_name"] = ranked_df["stock_code"].map(stock_name_map)
+                    else:
+                        ranked_df["stock_name"] = ranked_df["stock_name"].fillna(
+                            ranked_df["stock_code"].map(stock_name_map)
+                        )
+                    ranked_df["stock_name"] = ranked_df["stock_name"].fillna(
+                        ranked_df["stock_code"]
+                    )
                     ranked_df.insert(0, "rank", np.arange(1, len(ranked_df) + 1))
 
-                    display_columns = ["rank", "stock_code"]
-                    if "stock_name" in ranked_df.columns:
-                        display_columns.append("stock_name")
+                    display_columns = ["rank", "stock_code", "stock_name"]
 
                     factor_columns = [
                         calc.get_factor_column()
