@@ -513,22 +513,35 @@ def plot_strategy_performance(
         round((v / portfolio_values[0] - 1) * 100, 2) for v in portfolio_values
     ]
 
-    # 检测单日收益异常（阈值10%）
-    anomaly_threshold = 10.0
+    # 检测相邻交易日涨跌幅异常（区间[-6%, 6%]）
+    anomaly_lower, anomaly_upper = -6.0, 6.0
     anomalies = []
-    for i in range(1, len(portfolio_returns)):
-        daily_return = portfolio_returns[i] - portfolio_returns[i - 1]
-        if abs(daily_return) > anomaly_threshold:
+    for i in range(1, len(portfolio_values)):
+        prev_value = portfolio_values[i - 1]
+        curr_value = portfolio_values[i]
+
+        # 跳过非法净值，避免除零和类型问题
+        if (
+            prev_value is None
+            or curr_value is None
+            or not pd.notna(prev_value)
+            or not pd.notna(curr_value)
+            or prev_value == 0
+        ):
+            continue
+
+        daily_return = ((curr_value / prev_value) - 1) * 100
+        if daily_return < anomaly_lower or daily_return > anomaly_upper:
             date_str = date_strings[i] if i < len(date_strings) else f"Index-{i}"
             anomalies.append(
                 (date_str, daily_return, portfolio_returns[i - 1], portfolio_returns[i])
             )
 
     if anomalies:
-        st.warning("检测到单日收益异常 (>10%), 可能是数据问题:")
+        st.warning("检测到相邻交易日涨跌幅异常 (超出[-8%, 8%]), 可能是数据问题:")
         for date_str, daily_ret, prev_ret, curr_ret in anomalies:
             st.warning(
-                f"  {date_str}: {prev_ret:.2f}% -> {curr_ret}% (日涨幅 {daily_ret:+.2f}%)"
+                f"  {date_str}: {prev_ret:.2f}% -> {curr_ret:.2f}% (相邻交易日涨跌幅 {daily_ret:+.2f}%)"
             )
 
     # 获取指定指数数据进行对比
