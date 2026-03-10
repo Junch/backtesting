@@ -11,6 +11,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from cjdata import LocalData
+try:
+    from xtquant import xtdata
+except Exception:
+    xtdata = None
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -459,7 +463,9 @@ def _get_next_trade_date(
 
 
 def _build_order_lines(
-    ranked_df: pd.DataFrame, order_date: pd.Timestamp, quantity: int
+    ranked_df: pd.DataFrame,
+    order_date: pd.Timestamp,
+    quantity_column: str = "下单数量(股)",
 ) -> List[str]:
     """将候选股转换为 order.txt 格式行（无表头）。"""
     lines: List[str] = []
@@ -470,10 +476,147 @@ def _build_order_lines(
         if not re.match(r"^\d{6}\.(SH|SZ|BJ)$", stock_code):
             continue
 
+        try:
+            quantity = int(float(row.get(quantity_column, 0)))
+        except (TypeError, ValueError):
+            quantity = 0
+        if quantity <= 0:
+            continue
+
         stock_name = str(row.get("stock_name", stock_code)).strip() or stock_code
         lines.append(f"{date_text} 买入 {stock_code} {stock_name} {quantity}")
 
     return lines
+
+
+def _to_positive_float(value: object) -> Optional[float]:
+    """将任意对象转换为正数浮点，失败返回 None。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(number) or number <= 0:
+        return None
+    return number
+
+
+def _extract_quote_price_from_tick(tick_item: dict) -> Tuple[Optional[float], str]:
+    """优先 askPrice1，缺失时回退 lastPrice。"""
+
+    ask_price = tick_item.get("askPrice1")
+    if isinstance(ask_price, (list, tuple, np.ndarray)):
+        ask_price = ask_price[0] if len(ask_price) > 0 else None
+    ask_price = _to_positive_float(ask_price)
+    if ask_price is not None:
+        return ask_price, "askPrice1"
+
+    last_price = _to_positive_float(tick_item.get("lastPrice"))
+    if last_price is not None:
+        return last_price, "lastPrice"
+
+    return None, ""
+
+
+def _fetch_realtime_prices(
+    stock_codes: List[str],
+) -> Tuple[Dict[str, float], Dict[str, str], List[str]]:
+    """批量获取实时报价，返回价格、价格来源与错误列表。"""
+    prices: Dict[str, float] = {}
+    price_sources: Dict[str, str] = {}
+    errors: List[str] = []
+
+    if xtdata is None:
+        errors.append("xtquant.xtdata 不可用，请在可连接 miniQMT 的环境运行")
+        return prices, price_sources, errors
+
+    valid_codes = []
+    for code in stock_codes:
+        code_upper = str(code).upper().strip()
+        if re.match(r"^\d{6}\.(SH|SZ|BJ)$", code_upper):
+            valid_codes.append(code_upper)
+
+    if not valid_codes:
+        errors.append("没有可用于获取实时价格的合法股票代码")
+        return prices, price_sources, errors
+
+    try:
+        tick_data = xtdata.get_full_tick(valid_codes) or {}
+    except Exception as e:
+        errors.append(f"获取 xtdata 实时行情失败: {e}")
+        return prices, price_sources, errors
+
+    for code in valid_codes:
+        tick_item = tick_data.get(code)
+        if not isinstance(tick_item, dict):
+            errors.append(f"{code} 未返回 tick 数据")
+            continue
+
+        price, source = _extract_quote_price_from_tick(tick_item)
+        if price is None:
+            errors.append(f"{code} 缺少 askPrice1 和 lastPrice")
+            continue
+
+        prices[code] = price
+        price_sources[code] = source
+
+    return prices, price_sources, errors
+
+
+def _calculate_allocated_quantities(
+    ranked_df: pd.DataFrame,
+    total_capital: float,
+    buy_count: int,
+    realtime_prices: Dict[str, float],
+    price_sources: Dict[str, str],
+    lot_size: int = 100,
+) -> pd.DataFrame:
+    """基于总资金和实时价格计算每只股票下单数量。"""
+    result_df = ranked_df.copy()
+    per_stock_budget = total_capital / buy_count if buy_count > 0 else 0.0
+
+    quantities: List[int] = []
+    allocated_amounts: List[float] = []
+    used_prices: List[float] = []
+    used_price_sources: List[str] = []
+    notes: List[str] = []
+
+    for _, row in result_df.iterrows():
+        stock_code = str(row.get("stock_code", "")).upper().strip()
+        price = realtime_prices.get(stock_code)
+        source = price_sources.get(stock_code, "")
+
+        if price is None or price <= 0:
+            quantities.append(0)
+            allocated_amounts.append(0.0)
+            used_prices.append(np.nan)
+            used_price_sources.append("")
+            notes.append("无可用实时价格")
+            continue
+
+        raw_qty = int(per_stock_budget / price)
+        qty = (raw_qty // lot_size) * lot_size
+
+        if qty < lot_size:
+            quantities.append(0)
+            allocated_amounts.append(0.0)
+            used_prices.append(price)
+            used_price_sources.append(source)
+            notes.append("单票预算不足100股")
+            continue
+
+        quantities.append(qty)
+        allocated_amounts.append(qty * price)
+        used_prices.append(price)
+        used_price_sources.append(source)
+        notes.append("")
+
+    result_df["单票预算(元)"] = per_stock_budget
+    result_df["实时价格"] = used_prices
+    result_df["价格来源"] = used_price_sources
+    result_df["下单数量(股)"] = quantities
+    result_df["预计下单金额(元)"] = allocated_amounts
+    result_df["下单备注"] = notes
+    return result_df
 
 
 # --- Streamlit 应用主程序 ---
@@ -1033,9 +1176,9 @@ def main():
 
     with tab_picker:
         st.subheader("🌓 盘后选股")
-        st.caption("按指定日期计算多因子得分并排序，输出次日可执行买入清单")
+        st.caption("按指定日期计算多因子得分并排序，使用 xtdata 实时价格计算次日买入清单")
 
-        picker_col1, picker_col2, picker_col3 = st.columns(3)
+        picker_col1, picker_col2, picker_col3, picker_col4 = st.columns(4)
         with picker_col1:
             pick_date = st.date_input(
                 "选股日期",
@@ -1054,15 +1197,27 @@ def main():
                 key="picker_top_n",
             )
         with picker_col3:
-            order_quantity = st.number_input(
-                "每只股票下单数量",
-                min_value=100,
-                max_value=100000,
-                value=1000,
-                step=100,
-                key="picker_order_qty",
-                help="买入数量需为100股整数倍",
+            total_capital = st.number_input(
+                "总资金(元)",
+                min_value=1000.0,
+                max_value=100000000.0,
+                value=240000.0,
+                step=10000.0,
+                key="picker_total_capital",
+                help="总资金将按购买股票数量平均分配",
+                format="%.2f",
             )
+        with picker_col4:
+            buy_count = st.number_input(
+                "购买股票数量",
+                min_value=1,
+                max_value=100,
+                value=12,
+                step=1,
+                key="picker_buy_count",
+            )
+
+        st.caption("数量计算规则：单票预算 = 总资金 / 购买股票数量；下单数量按100股向下取整，剩余资金保留")
 
         run_picker = st.button("🔎 生成盘后候选与次日订单", type="primary", width="stretch")
 
@@ -1223,18 +1378,85 @@ def main():
                     st.success(
                         f"信号日 {signal_date.strftime('%Y-%m-%d')} 选出 {len(ranked_df)} 只候选股票"
                     )
+
+                    if xtdata is None:
+                        st.error("xtdata 不可用，无法按实时价格计算下单数量。请在 miniQMT 环境运行。")
+                        return
+
+                    target_buy_count = int(buy_count)
+                    if target_buy_count > len(ranked_df):
+                        st.warning(
+                            f"候选仅 {len(ranked_df)} 只，实际按 {len(ranked_df)} 只尝试下单"
+                        )
+                    if target_buy_count > int(top_n):
+                        st.warning(
+                            f"购买股票数量({target_buy_count}) 大于展示候选数量({int(top_n)})，仅能在候选范围内下单"
+                        )
+
+                    order_pool_count = min(target_buy_count, len(ranked_df))
+                    order_pool_df = ranked_df.head(order_pool_count).copy()
+
+                    realtime_prices, price_sources, quote_errors = _fetch_realtime_prices(
+                        order_pool_df["stock_code"].tolist()
+                    )
+                    if quote_errors:
+                        with st.expander("实时价格获取详情"):
+                            for err in quote_errors:
+                                st.write(f"- {err}")
+
+                    allocated_df = _calculate_allocated_quantities(
+                        order_pool_df,
+                        total_capital=float(total_capital),
+                        buy_count=target_buy_count,
+                        realtime_prices=realtime_prices,
+                        price_sources=price_sources,
+                    )
+
                     st.dataframe(ranked_df[display_columns], width="stretch")
 
+                    st.subheader("🧾 次日买入清单预览")
+                    order_display_columns = [
+                        "rank",
+                        "stock_code",
+                        "stock_name",
+                        "实时价格",
+                        "价格来源",
+                        "单票预算(元)",
+                        "下单数量(股)",
+                        "预计下单金额(元)",
+                        "下单备注",
+                    ]
+                    st.dataframe(allocated_df[order_display_columns], width="stretch")
+
                     next_trade_date = _get_next_trade_date(trading_days, signal_date)
+
+                    executable_df = allocated_df[
+                        (allocated_df["下单数量(股)"] > 0)
+                        & allocated_df["stock_code"].astype(str).str.match(
+                            r"^\d{6}\.(SH|SZ|BJ)$"
+                        )
+                    ].copy()
+
                     order_lines = _build_order_lines(
-                        ranked_df,
+                        executable_df,
                         next_trade_date,
-                        int(order_quantity),
                     )
 
                     if not order_lines:
-                        st.error("候选股代码不符合下单规范，未生成订单")
+                        st.error("未生成可下单记录，请检查实时价格或资金参数")
                         return
+
+                    total_allocated_amount = float(executable_df["预计下单金额(元)"].sum())
+                    remaining_amount = float(total_capital) - total_allocated_amount
+
+                    st.info(
+                        "总资金: "
+                        f"{float(total_capital):,.2f} 元 | "
+                        f"计划买入: {target_buy_count} 只 | "
+                        f"可下单: {len(executable_df)} 只 | "
+                        f"预计占用: {total_allocated_amount:,.2f} 元 | "
+                        f"剩余资金: {remaining_amount:,.2f} 元"
+                    )
 
                     order_content = "\n".join(order_lines)
                     order_file_path = os.path.join(os.path.dirname(__file__), "order.txt")
