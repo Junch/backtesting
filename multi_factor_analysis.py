@@ -1,6 +1,7 @@
 import backtrader as bt
-from datetime import datetime
+from datetime import datetime, timedelta
 import warnings
+import re
 
 warnings.filterwarnings("ignore")
 import sys
@@ -434,14 +435,55 @@ def plot_factor_analysis(
     return fig_corr, fig_weights
 
 
+def _resolve_signal_date(trading_days: List[pd.Timestamp], target_date: datetime) -> Optional[pd.Timestamp]:
+    """将用户输入日期映射到不晚于该日期的最近交易日。"""
+    if not trading_days:
+        return None
+
+    target_ts = pd.Timestamp(target_date).normalize()
+    eligible = [d for d in trading_days if pd.Timestamp(d).normalize() <= target_ts]
+    if not eligible:
+        return None
+    return pd.Timestamp(max(eligible)).normalize()
+
+
+def _get_next_trade_date(
+    trading_days: List[pd.Timestamp], signal_date: pd.Timestamp
+) -> pd.Timestamp:
+    """返回信号日后的下一交易日；若缺失则回退到自然日+1。"""
+    signal_ts = pd.Timestamp(signal_date).normalize()
+    future_days = [d for d in trading_days if pd.Timestamp(d).normalize() > signal_ts]
+    if future_days:
+        return pd.Timestamp(min(future_days)).normalize()
+    return (signal_ts + timedelta(days=1)).normalize()
+
+
+def _build_order_lines(
+    ranked_df: pd.DataFrame, order_date: pd.Timestamp, quantity: int
+) -> List[str]:
+    """将候选股转换为 order.txt 格式行（无表头）。"""
+    lines: List[str] = []
+    date_text = order_date.strftime("%Y-%m-%d")
+
+    for _, row in ranked_df.iterrows():
+        stock_code = str(row.get("stock_code", "")).upper().strip()
+        if not re.match(r"^\d{6}\.(SH|SZ|BJ)$", stock_code):
+            continue
+
+        stock_name = str(row.get("stock_name", stock_code)).strip() or stock_code
+        lines.append(f"{date_text} 买入 {stock_code} {stock_name} {quantity}")
+
+    return lines
+
+
 # --- Streamlit 应用主程序 ---
 def main():
     st.set_page_config(
         page_title="多因子量化策略回测系统", page_icon="🔬", layout="wide"
     )
 
-    st.title("🔬 多因子量化策略回测系统")
-    st.markdown("基于多个因子加权组合的股票选择策略回测分析")
+    st.title("🔬 多因子量化策略系统")
+    st.markdown("同一套多因子参数支持回测分析与盘后选股")
 
     # 侧边栏参数配置
     st.sidebar.header("多因子策略配置")
@@ -557,7 +599,7 @@ def main():
     st.sidebar.write(f"**总权重：** {total_weight:.1f}")
 
     # 其他参数设置
-    st.sidebar.subheader("📈 回测参数")
+    st.sidebar.subheader("📈 参数设置")
 
     # 板块选择
     sector_options = {
@@ -624,7 +666,7 @@ def main():
     )
     multi_factor_calculator.set_standardize_factors(standardize_factors)
 
-    # 风险控制参数
+    # 风险控制参数（回测页使用）
     st.sidebar.subheader("🛡️ 风险控制")
     enable_stop_loss = st.sidebar.checkbox("启用止损", value=False)
     stop_loss_pct = None
@@ -648,355 +690,501 @@ def main():
         "执行规则: t日生成调仓信号, 下一根K线执行。执行日若停牌/不可交易则跳过, 且不补单。"
     )
 
-    # 主界面展示区域
-    col1, col2 = st.columns([2, 1])
+    tab_backtest, tab_picker = st.tabs(["📈 回测分析", "🌓 盘后选股"])
 
-    with col1:
-        st.subheader("🎯 多因子策略概览")
+    with tab_backtest:
+        # 主界面展示区域
+        col1, col2 = st.columns([2, 1])
 
-        # 显示策略信息
-        strategy_info = f"""
-        **策略名称：** {multi_factor_calculator.name}
-        
-        **选中因子：** {len(selected_factors)} 个
-        
-        **因子权重配置：**
-        """
+        with col1:
+            st.subheader("🎯 多因子策略概览")
 
-        for factor_name, weight in selected_factors.items():
-            weight_pct = (weight / total_weight) * 100
-            strategy_info += f"\n- **{factor_name}**: {weight:.1f} ({weight_pct:.1f}%)"
+            strategy_info = f"""
+            **策略名称：** {multi_factor_calculator.name}
 
-        strategy_info += f"""
-        
-        **标准化处理：** {"是" if standardize_factors else "否"}
-        
-        **板块范围：** {sector_name}
-        
-        **回测期间：** {start_date} 至 {end_date}
-        """
+            **选中因子：** {len(selected_factors)} 个
 
-        st.markdown(strategy_info)
+            **因子权重配置：**
+            """
 
-    with col2:
-        st.subheader("📋 策略参数")
-        st.write(f"**调仓周期：** {rebalance_period} 个交易日")
-        st.write(f"**持仓数量：** {hold_top} 只股票")
-        st.write(f"**手续费率：** 0.1%")
-        if enable_stop_loss and stop_loss_pct is not None:
-            st.write(
-                f"**止损设置：** {stop_loss_pct * 100:.1f}% ({'移动' if trailing_stop else '固定'})"
-            )
-        else:
-            st.write("**止损设置：** 未启用")
+            for factor_name, weight in selected_factors.items():
+                weight_pct = (weight / total_weight) * 100
+                strategy_info += f"\n- **{factor_name}**: {weight:.1f} ({weight_pct:.1f}%)"
 
-    # 运行回测按钮
-    if st.button("🚀 开始多因子回测", type="primary", width="stretch"):
-        # 转换日期格式
-        start_str = start_date.strftime("%Y%m%d")
-        end_str = end_date.strftime("%Y%m%d")
+            strategy_info += f"""
 
-        with st.spinner("正在运行多因子回测..."):
-            try:
-                # 创建回测引擎
-                cerebro = bt.Cerebro()
-                cerebro.broker.setcash(1000000.0)
-                cerebro.broker.setcommission(commission=0.001)
-                cerebro.addobserver(bt.observers.Value)
+            **标准化处理：** {"是" if standardize_factors else "否"}
 
-                # 加载股票数据
-                st.info(f"正在加载{sector_name}板块股票数据...")
-                db_path = os.environ.get(
-                    "STOCK_DATA_DB", "C:/github/cjdata/data/stock_data_hfq.db"
+            **板块范围：** {sector_name}
+
+            **回测期间：** {start_date} 至 {end_date}
+            """
+
+            st.markdown(strategy_info)
+
+        with col2:
+            st.subheader("📋 策略参数")
+            st.write(f"**调仓周期：** {rebalance_period} 个交易日")
+            st.write(f"**持仓数量：** {hold_top} 只股票")
+            st.write(f"**手续费率：** 0.1%")
+            if enable_stop_loss and stop_loss_pct is not None:
+                st.write(
+                    f"**止损设置：** {stop_loss_pct * 100:.1f}% ({'移动' if trailing_stop else '固定'})"
                 )
-                findata = LocalData(db_path)
-                # 预留足够历史窗口用于因子计算和上市时长过滤
-                pre_lookback_days = 60
-                if listing_min_days is not None:
-                    pre_lookback_days = max(pre_lookback_days, listing_min_days + 30)
+            else:
+                st.write("**止损设置：** 未启用")
 
-                start_ts = pd.Timestamp(start_date)
-                pre_start_date = (
-                    start_ts - pd.Timedelta(days=pre_lookback_days)
-                ).strftime("%Y%m%d")
-                df = findata.get_stock_data_frame_in_sector(
-                    sector_name, pre_start_date, end_str, adj="hfq"
-                )
+        if st.button("🚀 开始多因子回测", type="primary", width="stretch"):
+            start_str = start_date.strftime("%Y%m%d")
+            end_str = end_date.strftime("%Y%m%d")
 
-                listed_dates = None
-                if enable_listing_age_filter:
-                    basic_df = findata.get_stock_basic_by_sector(sector_name)
-                    if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
-                        if {
-                            "stock_code",
-                            "listed_date",
-                        }.issubset(basic_df.columns):
-                            listed_dates = (
-                                basic_df.dropna(subset=["stock_code"])
-                                .drop_duplicates(subset=["stock_code"])
-                                .set_index("stock_code")["listed_date"]
-                            )
-                            listed_dates = pd.Series(listed_dates)
-
-                all_trade_dates = get_trading_days(df, start_date)
-
-                # 运行多因子回测
-                stock_list, buy_dates, sell_dates = run_multi_factor_backtesting(
-                    df,
-                    all_trade_dates,
-                    multi_factor_calculator,
-                    rebalance_period,
-                    hold_top,
-                    factor_params,
-                    filter_pipeline=filter_pipeline if filter_pipeline else None,
-                    listed_dates=listed_dates,
-                )
-
-                if not stock_list:
-                    st.error("未能加载任何股票数据，请检查数据源或调整日期范围")
-                    return
-
-                # 添加股票数据到回测引擎
-                for stock in stock_list:
-                    df_stock = df[
-                        (df["stock_code"] == stock)
-                        & (df["trade_date"].isin(all_trade_dates))
-                    ].set_index("trade_date")
-                    # 确保数据列名符合backtrader的要求
-                    data = bt.feeds.PandasData(
-                        dataname=df_stock,
-                        datetime=None,  # 使用索引作为日期
-                        open="open",
-                        high="high",
-                        low="low",
-                        close="close",
-                        volume="volume",
-                        openinterest=None,
-                    )
-                    data._name = stock  # 设置数据源名称
-                    cerebro.adddata(data)
-
-                st.success(f"成功加载 {len(stock_list)} 只股票")
-
-                # 添加策略和分析器
-                cerebro.addstrategy(
-                    DateStrategy,
-                    data_source=findata,
-                    buy_dates=buy_dates,
-                    sell_dates=sell_dates,
-                    stop_loss_pct=stop_loss_pct,
-                    trailing_stop=trailing_stop,
-                    log_file=None,
-                )
-                cerebro.addanalyzer(
-                    StockTradeAnalyzer,
-                    _name="stock_trade_analyzer",
-                    data_source=findata,
-                )
-                cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe_ratio")
-                cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
-                cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
-
-                # 运行回测
-                initial_value = cerebro.broker.getvalue()
-                st.info(f"初始资金: {initial_value:,.2f} 元")
-
-                results = cerebro.run()
-                final_value = cerebro.broker.getvalue()
-
-                # 显示回测结果
-                st.success(f"回测完成！最终资金: {final_value:,.2f} 元")
-
-                # 获取策略实例和分析结果
-                strat = results[0]
-
-                # 获取交易分析器
-                trade_analyzer = strat.analyzers.stock_trade_analyzer
-
-                # 显示性能指标
-                st.subheader("📊 多因子策略性能指标")
-
-                col1, col2, col3, col4, col5 = st.columns(5)
-
-                with col1:
-                    total_return = (final_value / initial_value - 1) * 100
-                    st.metric("总收益率", f"{total_return:.2f}%")
-
-                with col2:
-                    try:
-                        sharpe = strat.analyzers.sharpe_ratio.get_analysis()[
-                            "sharperatio"
-                        ]
-                        if sharpe is None:
-                            sharpe = 0.0
-                        st.metric("夏普比率", f"{sharpe:.3f}")
-                    except:
-                        st.metric("夏普比率", "N/A")
-
-                with col3:
-                    try:
-                        max_dd = strat.analyzers.drawdown.get_analysis()["max"][
-                            "drawdown"
-                        ]
-                        st.metric("最大回撤", f"{max_dd:.2f}%")
-                    except:
-                        st.metric("最大回撤", "N/A")
-
-                with col4:
-                    try:
-                        max_dd_len = strat.analyzers.drawdown.get_analysis()["max"][
-                            "len"
-                        ]
-                        st.metric("最长回撤时间", f"{max_dd_len} 天")
-                    except:
-                        st.metric("最长回撤时间", "N/A")
-
-                with col5:
-                    try:
-                        annual_return = strat.analyzers.returns.get_analysis()[
-                            "rnorm100"
-                        ]
-                        st.metric("年化收益率", f"{annual_return:.2f}%")
-                    except:
-                        st.metric("年化收益率", "N/A")
-
-                # 绘制收益曲线
-                st.subheader("📈 策略收益曲线")
-                sector_code = sector_options[sector_name]
-                pre_start_str = all_trade_dates[0].strftime("%Y%m%d")
-                chart = plot_strategy_performance(
-                    findata, trade_analyzer, pre_start_str, end_str, sector_code
-                )
-
-                if chart:
-                    # 渲染 pyecharts 图表
-                    chart_html = chart.render_embed()
-                    components.html(chart_html, height=650)
-
-                # 因子分析图表
-                st.subheader("🔬 因子分析")
-
-                # 选择分析日期（使用回测期间中间的日期）
-                mid_date_idx = len(all_trade_dates) // 2
-                analysis_date = all_trade_dates[mid_date_idx].strftime("%Y-%m-%d")
-
+            with st.spinner("正在运行多因子回测..."):
                 try:
-                    # 重新计算因子数据用于分析
-                    df_analysis = multi_factor_calculator.calculate(df, factor_params)
+                    cerebro = bt.Cerebro()
+                    cerebro.broker.setcash(1000000.0)
+                    cerebro.broker.setcommission(commission=0.001)
+                    cerebro.addobserver(bt.observers.Value)
 
-                    # 绘制因子分析图表
-                    fig_corr, fig_weights = plot_factor_analysis(
-                        df_analysis, multi_factor_calculator, analysis_date
+                    st.info(f"正在加载{sector_name}板块股票数据...")
+                    db_path = os.environ.get(
+                        "STOCK_DATA_DB", "C:/github/cjdata/data/stock_data_hfq.db"
+                    )
+                    findata = LocalData(db_path)
+
+                    pre_lookback_days = 60
+                    if listing_min_days is not None:
+                        pre_lookback_days = max(pre_lookback_days, listing_min_days + 30)
+
+                    start_ts = pd.Timestamp(start_date)
+                    pre_start_date = (
+                        start_ts - pd.Timedelta(days=pre_lookback_days)
+                    ).strftime("%Y%m%d")
+                    df = findata.get_stock_data_frame_in_sector(
+                        sector_name, pre_start_date, end_str, adj="hfq"
                     )
 
-                    col1, col2 = st.columns(2)
+                    listed_dates = None
+                    if enable_listing_age_filter:
+                        basic_df = findata.get_stock_basic_by_sector(sector_name)
+                        if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
+                            if {
+                                "stock_code",
+                                "listed_date",
+                            }.issubset(basic_df.columns):
+                                listed_dates = (
+                                    basic_df.dropna(subset=["stock_code"])
+                                    .drop_duplicates(subset=["stock_code"])
+                                    .set_index("stock_code")["listed_date"]
+                                )
+                                listed_dates = pd.Series(listed_dates)
+
+                    all_trade_dates = get_trading_days(df, start_date)
+
+                    stock_list, buy_dates, sell_dates = run_multi_factor_backtesting(
+                        df,
+                        all_trade_dates,
+                        multi_factor_calculator,
+                        rebalance_period,
+                        hold_top,
+                        factor_params,
+                        filter_pipeline=filter_pipeline if filter_pipeline else None,
+                        listed_dates=listed_dates,
+                    )
+
+                    if not stock_list:
+                        st.error("未能加载任何股票数据，请检查数据源或调整日期范围")
+                        return
+
+                    for stock in stock_list:
+                        df_stock = df[
+                            (df["stock_code"] == stock)
+                            & (df["trade_date"].isin(all_trade_dates))
+                        ].set_index("trade_date")
+                        data = bt.feeds.PandasData(
+                            dataname=df_stock,
+                            datetime=None,
+                            open="open",
+                            high="high",
+                            low="low",
+                            close="close",
+                            volume="volume",
+                            openinterest=None,
+                        )
+                        data._name = stock
+                        cerebro.adddata(data)
+
+                    st.success(f"成功加载 {len(stock_list)} 只股票")
+
+                    cerebro.addstrategy(
+                        DateStrategy,
+                        data_source=findata,
+                        buy_dates=buy_dates,
+                        sell_dates=sell_dates,
+                        stop_loss_pct=stop_loss_pct,
+                        trailing_stop=trailing_stop,
+                        log_file=None,
+                    )
+                    cerebro.addanalyzer(
+                        StockTradeAnalyzer,
+                        _name="stock_trade_analyzer",
+                        data_source=findata,
+                    )
+                    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe_ratio")
+                    cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
+                    cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+
+                    initial_value = cerebro.broker.getvalue()
+                    st.info(f"初始资金: {initial_value:,.2f} 元")
+
+                    results = cerebro.run()
+                    final_value = cerebro.broker.getvalue()
+
+                    st.success(f"回测完成！最终资金: {final_value:,.2f} 元")
+
+                    strat = results[0]
+                    trade_analyzer = strat.analyzers.stock_trade_analyzer
+
+                    st.subheader("📊 多因子策略性能指标")
+
+                    col1, col2, col3, col4, col5 = st.columns(5)
 
                     with col1:
-                        st.plotly_chart(fig_corr, width="stretch")
+                        total_return = (final_value / initial_value - 1) * 100
+                        st.metric("总收益率", f"{total_return:.2f}%")
 
                     with col2:
-                        st.plotly_chart(fig_weights, width="stretch")
+                        try:
+                            sharpe = strat.analyzers.sharpe_ratio.get_analysis()[
+                                "sharperatio"
+                            ]
+                            if sharpe is None:
+                                sharpe = 0.0
+                            st.metric("夏普比率", f"{sharpe:.3f}")
+                        except Exception:
+                            st.metric("夏普比率", "N/A")
 
-                except Exception as e:
-                    st.warning(f"因子分析图表生成失败: {str(e)}")
+                    with col3:
+                        try:
+                            max_dd = strat.analyzers.drawdown.get_analysis()["max"][
+                                "drawdown"
+                            ]
+                            st.metric("最大回撤", f"{max_dd:.2f}%")
+                        except Exception:
+                            st.metric("最大回撤", "N/A")
 
-                # 显示详细分析
-                with st.expander("📋 详细分析结果"):
-                    st.write("**多因子策略参数:**")
-                    st.write(f"- 策略名称: {multi_factor_calculator.name}")
-                    st.write(f"- 选中因子: {', '.join(selected_factors.keys())}")
-                    st.write(f"- 板块: {sector_name}")
-                    st.write(f"- 回测期间: {start_str} - {end_str}")
-                    st.write(f"- 调仓周期: {rebalance_period} 个交易日")
-                    st.write(f"- 持有股票数量: {hold_top} 只")
-                    st.write(f"- 手续费率: 0.1%")
-                    st.write(f"- 因子标准化: {'是' if standardize_factors else '否'}")
-                    st.write(
-                        "- 执行规则: t日生成信号, 下一根K线执行; 执行日不可交易则跳过且不补单"
+                    with col4:
+                        try:
+                            max_dd_len = strat.analyzers.drawdown.get_analysis()["max"][
+                                "len"
+                            ]
+                            st.metric("最长回撤时间", f"{max_dd_len} 天")
+                        except Exception:
+                            st.metric("最长回撤时间", "N/A")
+
+                    with col5:
+                        try:
+                            annual_return = strat.analyzers.returns.get_analysis()[
+                                "rnorm100"
+                            ]
+                            st.metric("年化收益率", f"{annual_return:.2f}%")
+                        except Exception:
+                            st.metric("年化收益率", "N/A")
+
+                    st.subheader("📈 策略收益曲线")
+                    sector_code = sector_options[sector_name]
+                    pre_start_str = all_trade_dates[0].strftime("%Y%m%d")
+                    chart = plot_strategy_performance(
+                        findata, trade_analyzer, pre_start_str, end_str, sector_code
                     )
 
-                    active_filters = filter_pipeline.get_filter_descriptions()
-                    if active_filters:
-                        st.write("**前置过滤条件:**")
-                        for filter_desc in active_filters:
-                            st.write(f"- {filter_desc}")
-                        if enable_listing_age_filter:
-                            st.write(
-                                "- 上市日期来源: stock_basic.listed_date(缺失时回退首个交易日)"
-                            )
-                    else:
-                        st.write("- 前置过滤: 未启用")
+                    if chart:
+                        chart_html = chart.render_embed()
+                        components.html(chart_html, height=650)
 
-                    # 显示因子权重配置
-                    st.write("**因子权重配置:**")
-                    for factor_name, weight in selected_factors.items():
-                        weight_pct = (weight / total_weight) * 100
-                        st.write(f"- {factor_name}: {weight:.1f} ({weight_pct:.1f}%)")
+                    st.subheader("🔬 因子分析")
 
-                    # 显示因子特定参数
-                    if factor_params:
-                        st.write("**因子特定参数:**")
-                        for factor_name, params in factor_params.items():
-                            st.write(f"- {factor_name}:")
-                            for key, value in params.items():
-                                st.write(f"  - {key}: {value}")
+                    mid_date_idx = len(all_trade_dates) // 2
+                    analysis_date = all_trade_dates[mid_date_idx].strftime("%Y-%m-%d")
 
-                    if enable_stop_loss and stop_loss_pct is not None:
-                        st.write(f"- 止损比例: {stop_loss_pct * 100:.1f}%")
+                    try:
+                        df_analysis = multi_factor_calculator.calculate(df, factor_params)
+
+                        fig_corr, fig_weights = plot_factor_analysis(
+                            df_analysis, multi_factor_calculator, analysis_date
+                        )
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            st.plotly_chart(fig_corr, width="stretch")
+
+                        with col2:
+                            st.plotly_chart(fig_weights, width="stretch")
+
+                    except Exception as e:
+                        st.warning(f"因子分析图表生成失败: {str(e)}")
+
+                    with st.expander("📋 详细分析结果"):
+                        st.write("**多因子策略参数:**")
+                        st.write(f"- 策略名称: {multi_factor_calculator.name}")
+                        st.write(f"- 选中因子: {', '.join(selected_factors.keys())}")
+                        st.write(f"- 板块: {sector_name}")
+                        st.write(f"- 回测期间: {start_str} - {end_str}")
+                        st.write(f"- 调仓周期: {rebalance_period} 个交易日")
+                        st.write(f"- 持有股票数量: {hold_top} 只")
+                        st.write(f"- 手续费率: 0.1%")
+                        st.write(f"- 因子标准化: {'是' if standardize_factors else '否'}")
                         st.write(
-                            f"- 止损类型: {'移动止损' if trailing_stop else '固定止损'}"
-                        )
-                    else:
-                        st.write("- 止损: 未启用")
-
-                    st.write("**回测统计:**")
-                    st.write(f"- 加载股票数量: {len(stock_list)} 只")
-                    st.write(f"- 初始资金: {initial_value:,.2f} 元")
-                    st.write(f"- 最终资金: {final_value:,.2f} 元")
-                    st.write(f"- 绝对收益: {final_value - initial_value:,.2f} 元")
-
-                    # 显示股票交易分析数据
-                    analysis_result = trade_analyzer.get_analysis()
-                    if (
-                        analysis_result["stock_analysis_df"] is not None
-                        and not analysis_result["stock_analysis_df"].empty
-                    ):
-                        st.write("**📈 股票交易分析数据:**")
-                        st.dataframe(
-                            analysis_result["stock_analysis_df"].style.format(
-                                {
-                                    "买入总额": "{:,.2f}",
-                                    "卖出总额": "{:,.2f}",
-                                    "当前持仓市值": "{:,.2f}",
-                                    "交易佣金": "{:.2f}",
-                                    "净盈亏": "{:,.2f}",
-                                    "收益率(%)": "{:.2f}%",
-                                }
-                            ),
-                            width="stretch",
+                            "- 执行规则: t日生成信号, 下一根K线执行; 执行日不可交易则跳过且不补单"
                         )
 
-                        # 显示汇总统计
-                        if analysis_result["summary_data"] is not None:
-                            st.write("**📊 回测汇总数据:**")
-                            summary_df = pd.DataFrame([analysis_result["summary_data"]])
+                        active_filters = filter_pipeline.get_filter_descriptions()
+                        if active_filters:
+                            st.write("**前置过滤条件:**")
+                            for filter_desc in active_filters:
+                                st.write(f"- {filter_desc}")
+                            if enable_listing_age_filter:
+                                st.write(
+                                    "- 上市日期来源: stock_basic.listed_date(缺失时回退首个交易日)"
+                                )
+                        else:
+                            st.write("- 前置过滤: 未启用")
+
+                        st.write("**因子权重配置:**")
+                        for factor_name, weight in selected_factors.items():
+                            weight_pct = (weight / total_weight) * 100
+                            st.write(f"- {factor_name}: {weight:.1f} ({weight_pct:.1f}%)")
+
+                        if factor_params:
+                            st.write("**因子特定参数:**")
+                            for factor_name, params in factor_params.items():
+                                st.write(f"- {factor_name}:")
+                                for key, value in params.items():
+                                    st.write(f"  - {key}: {value}")
+
+                        if enable_stop_loss and stop_loss_pct is not None:
+                            st.write(f"- 止损比例: {stop_loss_pct * 100:.1f}%")
+                            st.write(
+                                f"- 止损类型: {'移动止损' if trailing_stop else '固定止损'}"
+                            )
+                        else:
+                            st.write("- 止损: 未启用")
+
+                        st.write("**回测统计:**")
+                        st.write(f"- 加载股票数量: {len(stock_list)} 只")
+                        st.write(f"- 初始资金: {initial_value:,.2f} 元")
+                        st.write(f"- 最终资金: {final_value:,.2f} 元")
+                        st.write(f"- 绝对收益: {final_value - initial_value:,.2f} 元")
+
+                        analysis_result = trade_analyzer.get_analysis()
+                        if (
+                            analysis_result["stock_analysis_df"] is not None
+                            and not analysis_result["stock_analysis_df"].empty
+                        ):
+                            st.write("**📈 股票交易分析数据:**")
                             st.dataframe(
-                                summary_df.style.format(
+                                analysis_result["stock_analysis_df"].style.format(
                                     {
-                                        "初始资金": "{:,.2f}",
-                                        "最终资金": "{:,.2f}",
-                                        "总盈亏": "{:,.2f}",
-                                        "总收益率(%)": "{:.2f}%",
-                                        "总佣金": "{:.2f}",
-                                        "股票交易盈亏合计": "{:,.2f}",
+                                        "买入总额": "{:,.2f}",
+                                        "卖出总额": "{:,.2f}",
+                                        "当前持仓市值": "{:,.2f}",
+                                        "交易佣金": "{:.2f}",
+                                        "净盈亏": "{:,.2f}",
+                                        "收益率(%)": "{:.2f}%",
                                     }
                                 ),
                                 width="stretch",
                             )
 
-            except Exception as e:
-                st.error(f"多因子回测过程中发生错误: {str(e)}")
-                st.exception(e)
+                            if analysis_result["summary_data"] is not None:
+                                st.write("**📊 回测汇总数据:**")
+                                summary_df = pd.DataFrame([analysis_result["summary_data"]])
+                                st.dataframe(
+                                    summary_df.style.format(
+                                        {
+                                            "初始资金": "{:,.2f}",
+                                            "最终资金": "{:,.2f}",
+                                            "总盈亏": "{:,.2f}",
+                                            "总收益率(%)": "{:.2f}%",
+                                            "总佣金": "{:.2f}",
+                                            "股票交易盈亏合计": "{:,.2f}",
+                                        }
+                                    ),
+                                    width="stretch",
+                                )
+
+                except Exception as e:
+                    st.error(f"多因子回测过程中发生错误: {str(e)}")
+                    st.exception(e)
+
+    with tab_picker:
+        st.subheader("🌓 盘后选股")
+        st.caption("按指定日期计算多因子得分并排序，输出次日可执行买入清单")
+
+        picker_col1, picker_col2, picker_col3 = st.columns(3)
+        with picker_col1:
+            pick_date = st.date_input(
+                "选股日期",
+                value=end_date,
+                min_value=start_date,
+                max_value=end_date,
+                key="pick_trade_date",
+            )
+        with picker_col2:
+            top_n = st.number_input(
+                "展示候选数量",
+                min_value=1,
+                max_value=100,
+                value=20,
+                step=1,
+                key="picker_top_n",
+            )
+        with picker_col3:
+            order_quantity = st.number_input(
+                "每只股票下单数量",
+                min_value=100,
+                max_value=100000,
+                value=1000,
+                step=100,
+                key="picker_order_qty",
+                help="买入数量需为100股整数倍",
+            )
+
+        run_picker = st.button("🔎 生成盘后候选与次日订单", type="primary", width="stretch")
+
+        if run_picker:
+            with st.spinner("正在计算盘后选股结果..."):
+                try:
+                    db_path = os.environ.get(
+                        "STOCK_DATA_DB", "C:/github/cjdata/data/stock_data_hfq.db"
+                    )
+                    findata = LocalData(db_path)
+
+                    pre_lookback_days = 60
+                    if listing_min_days is not None:
+                        pre_lookback_days = max(pre_lookback_days, listing_min_days + 30)
+
+                    pick_ts = pd.Timestamp(pick_date)
+                    pre_start_date = (
+                        pick_ts - pd.Timedelta(days=pre_lookback_days)
+                    ).strftime("%Y%m%d")
+                    post_end_date = (pick_ts + pd.Timedelta(days=10)).strftime("%Y%m%d")
+
+                    df = findata.get_stock_data_frame_in_sector(
+                        sector_name,
+                        pre_start_date,
+                        post_end_date,
+                        adj="hfq",
+                    )
+
+                    if not isinstance(df, pd.DataFrame) or df.empty:
+                        st.error("未能加载股票数据，请检查日期或数据源")
+                        return
+
+                    listed_dates = None
+                    if enable_listing_age_filter:
+                        basic_df = findata.get_stock_basic_by_sector(sector_name)
+                        if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
+                            if {
+                                "stock_code",
+                                "listed_date",
+                            }.issubset(basic_df.columns):
+                                listed_dates = (
+                                    basic_df.dropna(subset=["stock_code"])
+                                    .drop_duplicates(subset=["stock_code"])
+                                    .set_index("stock_code")["listed_date"]
+                                )
+                                listed_dates = pd.Series(listed_dates)
+
+                    df = multi_factor_calculator.calculate(df, factor_params)
+                    composite_col = multi_factor_calculator.get_factor_column()
+
+                    trading_days = sorted(pd.to_datetime(df["trade_date"].dropna().unique()))
+                    signal_date = _resolve_signal_date(trading_days, pick_date)
+
+                    if signal_date is None:
+                        st.error("选股日期之前没有可用交易日数据")
+                        return
+
+                    day_df = df[
+                        (df["trade_date"] == signal_date) & (df[composite_col].notna())
+                    ].copy()
+
+                    first_trade_dates = (
+                        df.loc[df["trade_date"].notna(), ["stock_code", "trade_date"]]
+                        .groupby("stock_code")["trade_date"]
+                        .min()
+                    )
+
+                    if filter_pipeline:
+                        filter_context = StockFilterContext(
+                            trade_date=signal_date,
+                            universe_df=df,
+                            listed_dates=listed_dates,
+                            first_trade_dates=first_trade_dates,
+                        )
+                        day_df = filter_pipeline.apply(day_df, filter_context)
+
+                    if day_df.empty:
+                        st.warning("过滤后无可选股票，请调整参数")
+                        return
+
+                    ranked_df = day_df.sort_values(by=composite_col, ascending=False).head(
+                        int(top_n)
+                    )
+                    ranked_df = ranked_df.copy()
+                    ranked_df.insert(0, "rank", np.arange(1, len(ranked_df) + 1))
+
+                    display_columns = ["rank", "stock_code"]
+                    if "stock_name" in ranked_df.columns:
+                        display_columns.append("stock_name")
+
+                    factor_columns = [
+                        calc.get_factor_column()
+                        for calc in multi_factor_calculator.factor_calculators.values()
+                        if calc.get_factor_column() in ranked_df.columns
+                    ]
+
+                    display_columns.append(composite_col)
+                    display_columns.extend(factor_columns)
+                    display_columns = list(dict.fromkeys(display_columns))
+
+                    st.success(
+                        f"信号日 {signal_date.strftime('%Y-%m-%d')} 选出 {len(ranked_df)} 只候选股票"
+                    )
+                    st.dataframe(ranked_df[display_columns], width="stretch")
+
+                    next_trade_date = _get_next_trade_date(trading_days, signal_date)
+                    order_lines = _build_order_lines(
+                        ranked_df,
+                        next_trade_date,
+                        int(order_quantity),
+                    )
+
+                    if not order_lines:
+                        st.error("候选股代码不符合下单规范，未生成订单")
+                        return
+
+                    order_content = "\n".join(order_lines)
+                    order_file_path = os.path.join(os.path.dirname(__file__), "order.txt")
+                    with open(order_file_path, "w", encoding="utf-8") as f:
+                        f.write(order_content + "\n")
+
+                    st.info(
+                        f"已生成次日买入清单，日期: {next_trade_date.strftime('%Y-%m-%d')}，共 {len(order_lines)} 条"
+                    )
+                    st.code(order_content, language="text")
+                    st.download_button(
+                        "⬇️ 下载 order.txt",
+                        data=order_content.encode("utf-8"),
+                        file_name="order.txt",
+                        mime="text/plain",
+                        width="stretch",
+                    )
+
+                except Exception as e:
+                    st.error(f"盘后选股过程中发生错误: {str(e)}")
+                    st.exception(e)
 
 
 if __name__ == "__main__":
