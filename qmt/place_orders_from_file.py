@@ -100,6 +100,35 @@ def calculate_limit_price(
     ), "PreCloseFallback"
 
 
+def calculate_current_price(stock_code: str, direction: str) -> tuple[float, str]:
+    ticks = xtdata.get_full_tick([stock_code]) or {}
+    tick_item = ticks.get(stock_code) or {}
+
+    if not isinstance(tick_item, dict):
+        raise ValueError(f"{stock_code} 无法获取实时行情")
+
+    primary_key = "askPrice1" if direction == "买入" else "bidPrice1"
+    primary_value = tick_item.get(primary_key)
+    fallback_value = tick_item.get("lastPrice")
+
+    detail = xtdata.get_instrument_detail(stock_code) or {}
+    price_tick = detail.get("PriceTick", 0.01)
+
+    if isinstance(primary_value, (int, float)) and primary_value > 0:
+        return (
+            quantize_price(float(primary_value), float(price_tick), direction),
+            primary_key,
+        )
+
+    if isinstance(fallback_value, (int, float)) and fallback_value > 0:
+        return (
+            quantize_price(float(fallback_value), float(price_tick), direction),
+            "lastPriceFallback",
+        )
+
+    raise ValueError(f"{stock_code} 无法获取有效实时价格")
+
+
 def parse_order_line(line: str, line_no: int) -> dict:
     text = line.strip()
     if not text:
@@ -201,6 +230,7 @@ def execute_orders(
     dry_run: bool,
     side_filter: str,
     on_error: str,
+    price_mode: str,
 ) -> None:
     available_map = get_available_volume_map(xt_trader, account)
     strategy_name = "order_txt_batch"
@@ -242,11 +272,14 @@ def execute_orders(
                 continue
 
         try:
-            limit_price, source = calculate_limit_price(
-                stock_code, direction, stock_name
-            )
+            if price_mode == "current":
+                limit_price, source = calculate_current_price(stock_code, direction)
+            else:
+                limit_price, source = calculate_limit_price(
+                    stock_code, direction, stock_name
+                )
         except Exception as exc:
-            print(f"[第{line_no}行][拒绝] {stock_code} 限价计算失败: {exc}")
+            print(f"[第{line_no}行][拒绝] {stock_code} 价格计算失败: {exc}")
             if on_error == "stop":
                 print(f"[第{line_no}行][停止] on-error=stop，终止后续订单")
                 break
@@ -259,7 +292,7 @@ def execute_orders(
         remark = f"from_order_txt_{batch_ts}_L{line_no}"
 
         print(
-            f"[第{line_no}行][准备] {direction} {stock_code} {stock_name} 数量{volume} 限价{limit_price:.3f} 来源{source}"
+            f"[第{line_no}行][准备] {direction} {stock_code} {stock_name} 数量{volume} 限价{limit_price:.3f} 模式{price_mode} 来源{source}"
         )
 
         if dry_run:
@@ -300,7 +333,7 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="仅解析和计算限价，不实际下单",
+        help="仅解析和计算价格，不实际下单",
     )
     parser.add_argument(
         "--side",
@@ -313,6 +346,12 @@ def main() -> None:
         choices=["continue", "stop"],
         default="continue",
         help="单笔失败时行为: continue(默认)/stop",
+    )
+    parser.add_argument(
+        "--price-mode",
+        choices=["limit", "current"],
+        default="limit",
+        help="价格模式: limit(默认，涨跌停逻辑)/current(当前市价)",
     )
     args = parser.parse_args()
 
@@ -334,7 +373,15 @@ def main() -> None:
     xt_trader, account = connect_trader(qmt_path, account_id)
     print(f"QMT连接成功，账户: {account_id}")
 
-    execute_orders(orders, xt_trader, account, args.dry_run, args.side, args.on_error)
+    execute_orders(
+        orders,
+        xt_trader,
+        account,
+        args.dry_run,
+        args.side,
+        args.on_error,
+        args.price_mode,
+    )
 
 
 if __name__ == "__main__":

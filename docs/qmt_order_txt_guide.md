@@ -7,10 +7,15 @@
 - 忽略订单中的日期字段
 - 支持买入/卖出混合批量下单
 - 委托类型固定为限价单（`FIX_PRICE`）
-- 自动计算“尽量成交”的限价
-  - 买入：优先使用涨停价 `UpStopPrice`
-  - 卖出：优先使用跌停价 `DownStopPrice`
-  - 若无涨跌停字段，自动按昨收价和板块涨跌幅规则兜底
+- 可通过 `--price-mode` 选择价格来源
+  - `limit`（默认）：按涨跌停逻辑计算
+    - 买入优先使用涨停价 `UpStopPrice`
+    - 卖出优先使用跌停价 `DownStopPrice`
+    - 若无涨跌停字段，自动按昨收价和板块涨跌幅规则兜底
+  - `current`：按当前市价取值
+    - 买入优先使用 `askPrice1`
+    - 卖出优先使用 `bidPrice1`
+    - 若无买一/卖一，则回退 `lastPrice`
 
 ## 订单文件格式
 
@@ -49,9 +54,10 @@ python qmt/place_orders_from_file.py [参数]
 ```
 
 - `--file`：订单文件路径，默认 `order.txt`
-- `--dry-run`：仅解析和计算限价，不实际下单
+- `--dry-run`：仅解析和计算价格，不实际下单
 - `--side {all,buy,sell}`：方向过滤，默认 `all`
 - `--on-error {continue,stop}`：单笔失败时行为，默认 `continue`
+- `--price-mode {limit,current}`：价格模式，默认 `limit`
 
 ## 推荐用法
 
@@ -77,6 +83,12 @@ python qmt/place_orders_from_file.py --side sell --file order.txt
 
 ```bash
 python qmt/place_orders_from_file.py --on-error stop --file order.txt
+
+5) 使用当前市价模式：
+
+```bash
+python qmt/place_orders_from_file.py --price-mode current --file order.txt
+```
 ```
 
 ## 下单与成交说明
