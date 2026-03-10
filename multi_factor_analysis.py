@@ -1172,7 +1172,43 @@ def main():
                     )
                     ranked_df.insert(0, "rank", np.arange(1, len(ranked_df) + 1))
 
-                    display_columns = ["rank", "stock_code", "stock_name"]
+                    # 当日市值(亿元): market_cap > market > amount/turn/1e6
+                    if "market_cap" in ranked_df.columns:
+                        ranked_df["当日市值(亿元)"] = pd.to_numeric(
+                            ranked_df["market_cap"], errors="coerce"
+                        )
+                    elif "market" in ranked_df.columns:
+                        ranked_df["当日市值(亿元)"] = pd.to_numeric(
+                            ranked_df["market"], errors="coerce"
+                        )
+                    elif "amount" in ranked_df.columns and "turn" in ranked_df.columns:
+                        turn = pd.to_numeric(ranked_df["turn"], errors="coerce").replace(
+                            0, np.nan
+                        )
+                        amount = pd.to_numeric(ranked_df["amount"], errors="coerce")
+                        ranked_df["当日市值(亿元)"] = amount / turn / 1e6
+                    else:
+                        ranked_df["当日市值(亿元)"] = np.nan
+
+                    # PE: peTTM > pe
+                    if "peTTM" in ranked_df.columns:
+                        ranked_df["PE(TTM)"] = pd.to_numeric(
+                            ranked_df["peTTM"], errors="coerce"
+                        )
+                    elif "pe" in ranked_df.columns:
+                        ranked_df["PE(TTM)"] = pd.to_numeric(
+                            ranked_df["pe"], errors="coerce"
+                        )
+                    else:
+                        ranked_df["PE(TTM)"] = np.nan
+
+                    display_columns = [
+                        "rank",
+                        "stock_code",
+                        "stock_name",
+                        "当日市值(亿元)",
+                        "PE(TTM)",
+                    ]
 
                     factor_columns = [
                         calc.get_factor_column()
