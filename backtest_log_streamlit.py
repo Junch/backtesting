@@ -382,7 +382,7 @@ def _render_holdings_for_date(
                 "unrealized_pnl": "{:,.2f}",
             }
         ),
-        use_container_width=True,
+        width='stretch',
     )
 
 
@@ -469,7 +469,7 @@ def main() -> None:
         labels={"trade_date": "日期", "return_pct": "收益率(%)"},
     )
     fig.update_layout(height=460)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     with st.expander("查看净值明细"):
         st.dataframe(
@@ -483,7 +483,7 @@ def main() -> None:
                     "commission_cum": "{:,.2f}",
                 }
             ),
-            use_container_width=True,
+            width='stretch',
         )
 
     st.subheader("日期持仓查询")
@@ -507,7 +507,7 @@ def main() -> None:
                     "commission": "{:.2f}",
                 }
             ),
-            use_container_width=True,
+            width='stretch',
         )
 
 
