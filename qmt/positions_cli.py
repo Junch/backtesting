@@ -172,6 +172,7 @@ def export_sell_all_orders(rows: list[dict], output_path: Path) -> int:
                     item["stock_code"],
                     item["stock_name"],
                     int(item["can_use_volume"]),
+                    "",
                 ]
             )
 

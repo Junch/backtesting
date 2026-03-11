@@ -22,13 +22,14 @@
 默认读取项目根目录下的 `order.csv`，每行格式：
 
 ```text
-日期 动作 股票代码 股票名称 数量
+日期 动作 股票代码 股票名称 数量 限价(可选)
 ```
 
 示例：
 
 ```text
 2021-01-04 买入 603893.SH 瑞芯微 300
+2021-01-04 买入 600519.SH 贵州茅台 300 1460.00
 2021-01-04 卖出 600519.SH 贵州茅台 300
 ```
 
@@ -38,6 +39,8 @@
 - 动作仅支持：`买入` / `卖出`
 - 代码格式：`000001.SZ` / `600000.SH` / `430001.BJ`
 - 数量必须是正整数
+- 限价列可留空（留空时按 `--price-mode` 自动计算）
+- 限价列若填写，必须为大于 0 的数字，且优先于 `--price-mode`
 
 在 `multi_factor_analysis.py` 的盘后选股页中，`order.csv` 可由系统自动生成：
 
@@ -179,7 +182,7 @@ python qmt/cancel_orders.py --execute --confirm
 
 脚本 `qmt/positions_cli.py` 用于查询当前持仓；默认只打印持仓信息。
 
-当加上 `--export` 时，会导出全部可卖持仓到卖出订单 CSV（5 列、无表头），可直接给 `qmt/place_orders_from_file.py` 使用。
+当加上 `--export` 时，会导出全部可卖持仓到卖出订单 CSV（6 列、无表头），可直接给 `qmt/place_orders_from_file.py` 使用。
 
 ```bash
 # 默认：仅查询并打印当前持仓
@@ -195,7 +198,7 @@ python qmt/positions_cli.py --export --output order_sell_all_custom.csv
 导出文件每行格式：
 
 ```text
-日期,卖出,股票代码,股票名称,数量
+日期,卖出,股票代码,股票名称,数量,限价(留空)
 ```
 
 说明：

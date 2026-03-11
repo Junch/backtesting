@@ -132,10 +132,10 @@ def calculate_current_price(stock_code: str, direction: str) -> tuple[float, str
 
 def parse_order_line(row: list[str], line_no: int) -> dict:
     cols = [str(col).strip() for col in row]
-    if len(cols) != 5:
-        raise ValueError(f"字段数量错误，需要5列，当前{len(cols)}列")
+    if len(cols) != 6:
+        raise ValueError(f"字段数量错误，需要6列，当前{len(cols)}列")
 
-    date_text, direction, stock_code, stock_name, volume_text = cols
+    date_text, direction, stock_code, stock_name, volume_text, limit_price_text = cols
     stock_code = stock_code.upper()
 
     if direction not in {"买入", "卖出"}:
@@ -155,6 +155,15 @@ def parse_order_line(row: list[str], line_no: int) -> dict:
     if volume <= 0:
         raise ValueError(f"数量必须大于0: {volume}")
 
+    limit_price: float | None = None
+    if limit_price_text:
+        try:
+            limit_price = float(limit_price_text)
+        except ValueError as exc:
+            raise ValueError(f"限价不是数字: {limit_price_text}") from exc
+        if limit_price <= 0:
+            raise ValueError(f"限价必须大于0: {limit_price}")
+
     return {
         "line_no": line_no,
         "raw": ",".join(cols),
@@ -163,6 +172,7 @@ def parse_order_line(row: list[str], line_no: int) -> dict:
         "stock_code": stock_code,
         "stock_name": stock_name,
         "volume": volume,
+        "limit_price": limit_price,
     }
 
 
@@ -236,6 +246,7 @@ def execute_orders(
         stock_code = order["stock_code"]
         stock_name = order["stock_name"]
         volume = order["volume"]
+        user_limit_price = order["limit_price"]
         line_no = order["line_no"]
 
         if side_filter == "buy" and direction != "买入":
@@ -266,19 +277,23 @@ def execute_orders(
                     break
                 continue
 
-        try:
-            if price_mode == "current":
-                limit_price, source = calculate_current_price(stock_code, direction)
-            else:
-                limit_price, source = calculate_limit_price(
-                    stock_code, direction, stock_name
-                )
-        except Exception as exc:
-            print(f"[第{line_no}行][拒绝] {stock_code} 价格计算失败: {exc}")
-            if on_error == "stop":
-                print(f"[第{line_no}行][停止] on-error=stop，终止后续订单")
-                break
-            continue
+        if user_limit_price is not None:
+            limit_price = user_limit_price
+            source = "UserSpecified"
+        else:
+            try:
+                if price_mode == "current":
+                    limit_price, source = calculate_current_price(stock_code, direction)
+                else:
+                    limit_price, source = calculate_limit_price(
+                        stock_code, direction, stock_name
+                    )
+            except Exception as exc:
+                print(f"[第{line_no}行][拒绝] {stock_code} 价格计算失败: {exc}")
+                if on_error == "stop":
+                    print(f"[第{line_no}行][停止] on-error=stop，终止后续订单")
+                    break
+                continue
 
         order_type = (
             xtconstant.STOCK_BUY if direction == "买入" else xtconstant.STOCK_SELL

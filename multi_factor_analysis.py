@@ -469,7 +469,7 @@ def _build_order_lines(
     order_date: pd.Timestamp,
     quantity_column: str = "下单数量(股)",
 ) -> List[List[str]]:
-    """将候选股转换为 order.csv 格式行（无表头）。"""
+    """将候选股转换为 order.csv 格式行（无表头，含可选限价列）。"""
     rows: List[List[str]] = []
     date_text = order_date.strftime("%Y-%m-%d")
 
@@ -486,7 +486,7 @@ def _build_order_lines(
             continue
 
         stock_name = str(row.get("stock_name", stock_code)).strip() or stock_code
-        rows.append([date_text, "买入", stock_code, stock_name, str(quantity)])
+        rows.append([date_text, "买入", stock_code, stock_name, str(quantity), ""])
 
     return rows
 
