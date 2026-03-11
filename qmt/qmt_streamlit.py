@@ -1,6 +1,7 @@
 import streamlit as st
 from xtquant import xtdata
 from xtquant import xttrader
+from xtquant import xtconstant
 import time
 import pandas as pd
 from xtquant.xttype import StockAccount
@@ -54,6 +55,185 @@ def init_session_state():
         st.session_state.connected = False
         st.session_state.xt_trader = None
         st.session_state.acc = None
+    if 'orders' not in st.session_state:
+        st.session_state.orders = []
+    if 'selected_order_ids' not in st.session_state:
+        st.session_state.selected_order_ids = []
+    if 'orders_last_refresh_ts' not in st.session_state:
+        st.session_state.orders_last_refresh_ts = None
+
+
+def _order_direction_text(order):
+    """将委托方向转为中文"""
+    direction = getattr(order, 'order_type', None)
+    if direction == getattr(xtconstant, 'STOCK_BUY', object()):
+        return '买入'
+    if direction == getattr(xtconstant, 'STOCK_SELL', object()):
+        return '卖出'
+
+    direction = getattr(order, 'direction', None)
+    if direction == getattr(xtconstant, 'STOCK_BUY', object()):
+        return '买入'
+    if direction == getattr(xtconstant, 'STOCK_SELL', object()):
+        return '卖出'
+
+    return '未知'
+
+
+def _format_order_time(raw_time):
+    """格式化委托时间显示"""
+    if raw_time is None or raw_time == '':
+        return '-'
+
+    if isinstance(raw_time, datetime.datetime):
+        return raw_time.strftime('%Y-%m-%d %H:%M:%S')
+
+    if isinstance(raw_time, (int, float)):
+        raw = str(int(raw_time))
+    else:
+        raw = str(raw_time)
+
+    if raw.isdigit() and len(raw) == 14:
+        return f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]} {raw[8:10]}:{raw[10:12]}:{raw[12:14]}"
+    if raw.isdigit() and len(raw) == 8:
+        return f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+    return raw
+
+
+def _query_orders_raw(xt_trader_client, account):
+    """兼容不同xtquant版本的委托查询接口"""
+    candidate_names = ['query_stock_orders', 'query_orders']
+    last_error = None
+
+    for name in candidate_names:
+        method = getattr(xt_trader_client, name, None)
+        if method is None:
+            continue
+
+        try:
+            data = method(account)
+        except TypeError:
+            data = method()
+        except Exception as exc:
+            last_error = exc
+            continue
+
+        if data is None:
+            return []
+        if isinstance(data, list):
+            return data
+        return list(data)
+
+    if last_error is not None:
+        raise RuntimeError(f"查询委托失败: {last_error}") from last_error
+    raise RuntimeError('当前xtquant版本未提供可用的委托查询接口')
+
+
+def query_pending_orders(xt_trader_client, account):
+    """查询当前可展示委托并标准化为表格字段"""
+    raw_orders = _query_orders_raw(xt_trader_client, account)
+    result = []
+    seen_order_ids = set()
+
+    for order in raw_orders:
+        order_id = getattr(order, 'order_id', None)
+        if not isinstance(order_id, int) or order_id <= 0:
+            continue
+        if order_id in seen_order_ids:
+            continue
+
+        seen_order_ids.add(order_id)
+        result.append(
+            {
+                '委托编号': order_id,
+                '证券代码': str(getattr(order, 'stock_code', '') or ''),
+                '方向': _order_direction_text(order),
+                '委托数量': int(getattr(order, 'order_volume', 0) or 0),
+                '已成数量': int(
+                    getattr(order, 'traded_volume', getattr(order, 'deal_volume', 0)) or 0
+                ),
+                '委托价格': float(
+                    getattr(order, 'price', getattr(order, 'order_price', 0.0)) or 0.0
+                ),
+                '状态': str(getattr(order, 'order_status', getattr(order, 'status', ''))),
+                '委托时间': _format_order_time(
+                    getattr(order, 'order_time', getattr(order, 'insert_time', ''))
+                ),
+            }
+        )
+
+    return result
+
+
+def _cancel_one_order(xt_trader_client, account, order_id):
+    """兼容不同xtquant版本的撤单接口"""
+    candidate_names = ['cancel_order_stock', 'cancel_order', 'cancel_stock_order']
+    last_error = None
+
+    for name in candidate_names:
+        method = getattr(xt_trader_client, name, None)
+        if method is None:
+            continue
+
+        try:
+            return method(account, order_id)
+        except TypeError:
+            try:
+                return method(order_id)
+            except Exception as exc:
+                last_error = exc
+                continue
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    if last_error is not None:
+        raise RuntimeError(f"撤单调用失败: {last_error}") from last_error
+    raise RuntimeError('当前xtquant版本未提供可用的撤单接口')
+
+
+def _is_cancel_success(result):
+    """兼容不同撤单返回值类型"""
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, int):
+        return result == 0 or result > 0
+    if result is None:
+        return False
+    return True
+
+
+def refresh_orders_data(show_error=True):
+    """刷新委托订单数据"""
+    try:
+        orders = query_pending_orders(st.session_state.xt_trader, st.session_state.acc)
+        st.session_state.orders = orders
+        st.session_state.orders_last_refresh_ts = datetime.datetime.now()
+        return True
+    except Exception as e:
+        st.session_state.orders = []
+        st.session_state.orders_last_refresh_ts = datetime.datetime.now()
+        if show_error:
+            st.warning(f"⚠️ 委托查询失败: {str(e)}")
+        return False
+
+
+def cancel_orders_by_ids(order_ids):
+    """按委托编号执行撤单"""
+    success_ids = []
+    failed_items = []
+
+    for order_id in order_ids:
+        try:
+            result = _cancel_one_order(st.session_state.xt_trader, st.session_state.acc, int(order_id))
+            if _is_cancel_success(result):
+                success_ids.append(int(order_id))
+            else:
+                failed_items.append((int(order_id), f'返回值: {result}'))
+        except Exception as e:
+            failed_items.append((int(order_id), str(e)))
+
+    return success_ids, failed_items
 
 def connect_qmt_client():
     """连接QMT客户端"""
@@ -143,11 +323,13 @@ def query_account_data(refresh_all):
                 # 缓存查询结果
                 st.session_state.asset = asset
                 st.session_state.positions = positions
+                refresh_orders_data(show_error=True)
                 
             except Exception as e:
                 st.error(f"❌ 查询信息失败: {str(e)}")
                 st.session_state.asset = None
                 st.session_state.positions = None
+                st.session_state.orders = []
 
 def display_asset_info():
     """显示资产信息"""
@@ -481,6 +663,98 @@ def display_positions_info():
         st.header("📊 持仓信息")
         st.info("📭 当前无持仓")
 
+
+def display_orders_info():
+    """显示当前委托订单，可单笔撤单和批量撤单"""
+    st.header("🧾 委托订单")
+
+    orders = st.session_state.orders if hasattr(st.session_state, 'orders') else []
+    st.info(f"📦 当前委托数量: {len(orders)}")
+
+    if hasattr(st.session_state, 'orders_last_refresh_ts') and st.session_state.orders_last_refresh_ts:
+        st.caption(f"最近刷新时间: {st.session_state.orders_last_refresh_ts.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    if not orders:
+        st.info("📭 当前无可撤委托")
+        if st.button("🔄 刷新委托", key="refresh_orders_empty"):
+            with st.spinner("正在刷新委托..."):
+                refresh_orders_data(show_error=True)
+            st.rerun()
+        return
+
+    df_orders = pd.DataFrame(orders)
+    df_orders.insert(0, '选择', False)
+
+    edited_df = st.data_editor(
+        df_orders,
+        hide_index=True,
+        width='stretch',
+        height=80 + len(df_orders) * 35,
+        key='orders_editor',
+        disabled=['委托编号', '证券代码', '方向', '委托数量', '已成数量', '委托价格', '状态', '委托时间'],
+        column_config={
+            '选择': st.column_config.CheckboxColumn('选择', width='small'),
+            '委托编号': st.column_config.NumberColumn('委托编号', format='%d', width='small'),
+            '证券代码': st.column_config.TextColumn('证券代码', width='small'),
+            '方向': st.column_config.TextColumn('方向', width='small'),
+            '委托数量': st.column_config.NumberColumn('委托数量', format='%d', width='small'),
+            '已成数量': st.column_config.NumberColumn('已成数量', format='%d', width='small'),
+            '委托价格': st.column_config.NumberColumn('委托价格', format='%.3f', width='small'),
+            '状态': st.column_config.TextColumn('状态', width='medium'),
+            '委托时间': st.column_config.TextColumn('委托时间', width='medium'),
+        },
+    )
+
+    selected_ids = (
+        edited_df.loc[edited_df['选择'] == True, '委托编号'].astype(int).tolist()
+        if not edited_df.empty
+        else []
+    )
+    st.session_state.selected_order_ids = selected_ids
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button('🧨 撤销选中订单', type='primary', width='stretch'):
+            if not selected_ids:
+                st.warning('请先勾选至少一条委托。')
+            else:
+                with st.spinner('正在批量撤单...'):
+                    success_ids, failed_items = cancel_orders_by_ids(selected_ids)
+                    refresh_orders_data(show_error=False)
+
+                if success_ids:
+                    st.success(f"✅ 批量撤单成功: {len(success_ids)} 笔")
+                if failed_items:
+                    failed_text = '，'.join([f"{oid}({msg})" for oid, msg in failed_items])
+                    st.error(f"❌ 批量撤单失败: {len(failed_items)} 笔 | {failed_text}")
+                if not success_ids and not failed_items:
+                    st.info('没有执行任何撤单。')
+
+    with col2:
+        if st.button('🎯 撤销单笔订单', width='stretch'):
+            if len(selected_ids) != 1:
+                st.warning('单笔撤单需要且只能选择一条委托。')
+            else:
+                order_id = selected_ids[0]
+                with st.spinner(f'正在撤销委托 {order_id} ...'):
+                    success_ids, failed_items = cancel_orders_by_ids([order_id])
+                    refresh_orders_data(show_error=False)
+
+                if success_ids:
+                    st.success(f'✅ 委托 {order_id} 撤单成功')
+                else:
+                    st.error(f'❌ 委托 {order_id} 撤单失败: {failed_items[0][1] if failed_items else "未知错误"}')
+
+    with col3:
+        if st.button('🔄 刷新委托', width='stretch'):
+            with st.spinner('正在刷新委托...'):
+                refresh_orders_data(show_error=True)
+            st.rerun()
+
+    if selected_ids:
+        st.caption(f"已选中委托编号: {', '.join([str(i) for i in selected_ids])}")
+
 def handle_connection_failure():
     """处理连接失败情况"""
     st.info("🔄 请刷新页面重新连接QMT客户端")
@@ -522,6 +796,11 @@ def main():
         
         # 显示持仓信息
         display_positions_info()
+
+        st.markdown("---")
+
+        # 显示委托订单信息
+        display_orders_info()
     else:
         # 处理连接失败
         handle_connection_failure()
