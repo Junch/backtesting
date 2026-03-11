@@ -54,7 +54,8 @@ python qmt/place_orders_from_file.py [参数]
 ```
 
 - `--file`：订单文件路径，默认 `order.csv`
-- `--dry-run`：仅解析和计算价格，不实际下单
+- `--dry-run`：仅解析和计算价格，不实际下单（默认）
+- `--execute`：执行真实下单（关闭默认 dry-run）
 - `--side {all,buy,sell}`：方向过滤，默认 `all`
 - `--on-error {continue,stop}`：单笔失败时行为，默认 `continue`
 - `--price-mode {limit,current}`：价格模式，默认 `limit`
@@ -64,7 +65,7 @@ python qmt/place_orders_from_file.py [参数]
 1) 先演练，不下真实单：
 
 ```bash
-python qmt/place_orders_from_file.py --dry-run --file order.csv
+python qmt/place_orders_from_file.py --file order.csv
 ```
 
 2) 只执行买单（集合竞价常用）：
@@ -83,12 +84,63 @@ python qmt/place_orders_from_file.py --side sell --file order.csv
 
 ```bash
 python qmt/place_orders_from_file.py --on-error stop --file order.csv
+```
 
 5) 使用当前市价模式：
 
 ```bash
 python qmt/place_orders_from_file.py --price-mode current --file order.csv
 ```
+
+6) 执行真实下单（关闭默认演练模式）：
+
+```bash
+python qmt/place_orders_from_file.py --execute --file order.csv
+```
+
+## 撤销全部委托订单
+
+脚本 `qmt/cancel_orders.py` 用于批量撤销当前账户委托，默认 `dry-run` 仅演练。
+
+详细说明请参考：`docs/qmt_cancel_orders_guide.md`。
+
+最短操作卡片：
+
+```bash
+# 1) 先演练（默认）
+python qmt/cancel_orders.py
+
+# 2) 实盘撤单（含确认）
+python qmt/cancel_orders.py --execute
+
+# 3) 实盘撤单（跳过确认）
+python qmt/cancel_orders.py --execute --confirm
+```
+
+```bash
+python qmt/cancel_orders.py [参数]
+```
+
+- `--dry-run`：仅查询并展示将撤订单（默认）
+- `--execute`：执行真实撤单
+- `--side {all,buy,sell}`：方向过滤，默认 `all`
+- `--on-error {continue,stop}`：单笔失败时行为，默认 `continue`
+- `--confirm`：执行模式下跳过交互确认，直接撤单
+
+常用示例：
+
+```bash
+# 默认演练（不实际撤单）
+python qmt/cancel_orders.py
+
+# 只撤买单（先演练）
+python qmt/cancel_orders.py --side buy
+
+# 真实撤单（交互确认）
+python qmt/cancel_orders.py --execute
+
+# 真实撤单（跳过确认）
+python qmt/cancel_orders.py --execute --confirm
 ```
 
 ## 下单与成交说明

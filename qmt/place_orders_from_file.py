@@ -325,10 +325,18 @@ def main() -> None:
         default="order.csv",
         help="订单文件路径，默认: order.csv",
     )
+    parser.set_defaults(dry_run=True)
     parser.add_argument(
         "--dry-run",
+        dest="dry_run",
         action="store_true",
-        help="仅解析和计算价格，不实际下单",
+        help="仅解析和计算价格，不实际下单（默认）",
+    )
+    parser.add_argument(
+        "--execute",
+        dest="dry_run",
+        action="store_false",
+        help="执行真实下单（关闭dry-run）",
     )
     parser.add_argument(
         "--side",
@@ -364,6 +372,10 @@ def main() -> None:
     orders = parse_orders(order_file)
     print(f"读取订单 {len(orders)} 条，文件: {order_file}")
     print("注意: 已忽略订单中的日期字段")
+    if args.dry_run:
+        print("当前模式: DRY-RUN（仅演练，不会实际下单）")
+    else:
+        print("当前模式: EXECUTE（将执行真实下单）")
 
     xt_trader, account = connect_trader(qmt_path, account_id)
     print(f"QMT连接成功，账户: {account_id}")
