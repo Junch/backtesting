@@ -174,3 +174,33 @@ python qmt/cancel_orders.py --execute --confirm
 - 卖单被拒绝（可卖数量不足）
   - 脚本会按当前持仓可卖数量校验，避免超卖
   - 请调整 `order.csv` 数量后重试
+
+## 查询持仓与导出清仓卖单
+
+脚本 `qmt/positions_cli.py` 用于查询当前持仓；默认只打印持仓信息。
+
+当加上 `--export` 时，会导出全部可卖持仓到卖出订单 CSV（5 列、无表头），可直接给 `qmt/place_orders_from_file.py` 使用。
+
+```bash
+# 默认：仅查询并打印当前持仓
+python qmt/positions_cli.py
+
+# 导出清仓卖单到默认文件 order_sell_all.csv
+python qmt/positions_cli.py --export
+
+# 导出到指定文件
+python qmt/positions_cli.py --export --output order_sell_all_custom.csv
+```
+
+导出文件每行格式：
+
+```text
+日期,卖出,股票代码,股票名称,数量
+```
+
+说明：
+
+- 日期为当天 `YYYY-MM-DD`
+- 数量取当前可卖数量 `can_use_volume`
+- 仅导出 `can_use_volume > 0` 的持仓
+- 若无可卖持仓，会提示并且不生成空文件
