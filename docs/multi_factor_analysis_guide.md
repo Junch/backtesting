@@ -31,7 +31,7 @@
 ### 1. 启动系统
 ```bash
 # 在项目根目录下运行
-streamlit run backtesting/multi_factor_analysis.py --server.address 127.0.0.1 --server.port 6007
+streamlit run src/multi_factor_analysis.py --server.address 127.0.0.1 --server.port 6007
 ```
 
 ### 2. 配置策略参数

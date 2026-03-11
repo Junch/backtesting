@@ -40,7 +40,7 @@
 ### 1. 启动应用
 ```bash
 cd /Users/jun/github/quant_trading_study
-python -m streamlit run backtesting/single_factor_analysis.py --server.port 8502
+python -m streamlit run src/single_factor_analysis.py --server.port 8502
 ```
 
 ### 2. 配置参数
