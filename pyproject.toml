@@ -1,0 +1,18 @@
+[project]
+name = "backtesting"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "backtrader>=1.9.78.123",
+    "cjdata",
+    "plotly>=6.6.0",
+    "pyecharts>=2.1.0",
+    "scikit-learn>=1.8.0",
+    "streamlit>=1.55.0",
+    "xtquant>=250516.1.1",
+]
+
+[tool.uv.sources]
+cjdata = { path = "../cjdata", editable = true }
