@@ -69,6 +69,23 @@ def main():
     # 创建多因子计算器
     multi_factor_calculator = MultiFactorCalculator()
 
+    # 中性化全局设置
+    st.sidebar.subheader("⚖️ 因子中性化设置")
+    enable_factor_neutralization = st.sidebar.checkbox(
+        "启用因子中性化",
+        value=False,
+        help="按交易日横截面对因子做行业/市值中性化，使用残差参与打分",
+    )
+    neutralization_industry_col = "industry_sw1"
+    if enable_factor_neutralization:
+        neutralization_industry_col = st.sidebar.selectbox(
+            "行业字段",
+            options=["industry_sw1", "industry_sw2"],
+            index=0,
+            help="industry_sw1=申万一级，industry_sw2=申万二级",
+        )
+    multi_factor_calculator.set_industry_column(neutralization_industry_col)
+
     # 可用因子列表
     factor_names = list(AVAILABLE_FACTORS.keys())
 
@@ -156,6 +173,42 @@ def main():
                     key=f"turnover_period_{factor_name}",
                 )
                 factor_params[factor_name] = {"turnover_period": turnover_period}
+
+            if enable_factor_neutralization:
+                default_industry_neutralize = factor_name in ("动量因子", "市值因子")
+                default_market_cap_neutralize = factor_name == "动量因子"
+
+                ncol1, ncol2 = st.sidebar.columns(2)
+                with ncol1:
+                    industry_neutralize = st.checkbox(
+                        "行业中性化",
+                        value=default_industry_neutralize,
+                        key=f"neutralize_industry_{factor_name}",
+                    )
+
+                if factor_name == "市值因子":
+                    market_cap_neutralize = False
+                    with ncol2:
+                        st.checkbox(
+                            "市值中性化",
+                            value=False,
+                            key=f"neutralize_market_cap_{factor_name}",
+                            disabled=True,
+                            help="市值因子不对市值本身中性化，避免自回归",
+                        )
+                else:
+                    with ncol2:
+                        market_cap_neutralize = st.checkbox(
+                            "市值中性化",
+                            value=default_market_cap_neutralize,
+                            key=f"neutralize_market_cap_{factor_name}",
+                        )
+
+                multi_factor_calculator.set_neutralization_config(
+                    factor_name,
+                    industry=industry_neutralize,
+                    market_cap=market_cap_neutralize,
+                )
 
     # 检查是否至少选择了一个因子
     if not selected_factors:
@@ -290,6 +343,10 @@ def main():
 
             **标准化处理：** {"是" if standardize_factors else "否"}
 
+            **因子中性化：** {"是" if enable_factor_neutralization else "否"}
+
+            **行业字段：** {neutralization_industry_col}
+
             **板块范围：** {sector_name}
 
             **回测期间：** {start_date} 至 {end_date}
@@ -387,6 +444,13 @@ def main():
                                 .to_dict()
                             )
 
+                    selected_industry_map = (
+                        industry_sw2_map
+                        if neutralization_industry_col == "industry_sw2"
+                        else industry_sw1_map
+                    )
+                    multi_factor_calculator.set_industry_map(selected_industry_map)
+
                     all_trade_dates = get_trading_days(df, start_date)
 
                     stock_list, buy_dates, sell_dates = run_multi_factor_backtesting(
@@ -398,6 +462,7 @@ def main():
                         factor_params,
                         filter_pipeline=filter_pipeline if filter_pipeline else None,
                         listed_dates=listed_dates,
+                        industry_map=selected_industry_map,
                     )
 
                     if not stock_list:
@@ -543,6 +608,22 @@ def main():
                         st.write(f"- 持有股票数量: {hold_top} 只")
                         st.write(f"- 手续费率: 0.1%")
                         st.write(f"- 因子标准化: {'是' if standardize_factors else '否'}")
+                        st.write(
+                            f"- 因子中性化: {'是' if enable_factor_neutralization else '否'}"
+                        )
+                        if enable_factor_neutralization:
+                            st.write(f"- 中性化行业字段: {neutralization_industry_col}")
+                            neutralization_cfg = (
+                                multi_factor_calculator.neutralization_config
+                            )
+                            for factor_name in selected_factors.keys():
+                                cfg = neutralization_cfg.get(factor_name, {})
+                                st.write(
+                                    "- "
+                                    f"{factor_name} 中性化: "
+                                    f"行业={'是' if cfg.get('industry', False) else '否'}, "
+                                    f"市值={'是' if cfg.get('market_cap', False) else '否'}"
+                                )
                         st.write(
                             "- 执行规则: t日生成信号, 下一根K线执行; 执行日不可交易则跳过且不补单"
                         )
@@ -750,6 +831,13 @@ def main():
                                 .astype(str)
                                 .to_dict()
                             )
+
+                    selected_industry_map = (
+                        industry_sw2_map
+                        if neutralization_industry_col == "industry_sw2"
+                        else industry_sw1_map
+                    )
+                    multi_factor_calculator.set_industry_map(selected_industry_map)
 
                     df = multi_factor_calculator.calculate(df, factor_params)
                     composite_col = multi_factor_calculator.get_factor_column()

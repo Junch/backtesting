@@ -31,6 +31,10 @@ class MultiFactorCalculator:
         self.factor_calculators: Dict[str, FactorCalculator] = {}
         self.factor_weights: Dict[str, float] = {}
         self.standardize_factors = True  # 是否标准化因子值
+        self.neutralization_config: Dict[str, Dict[str, bool]] = {}
+        self.industry_col = "industry_sw1"
+        self.industry_map: Dict[str, str] = {}
+        self.min_neutralization_samples = 10
 
     def add_factor(
         self, factor_name: str, factor_calculator: FactorCalculator, weight: float = 1.0
@@ -76,6 +80,23 @@ class MultiFactorCalculator:
         """设置是否标准化因子值"""
         self.standardize_factors = standardize
 
+    def set_neutralization_config(
+        self, factor_name: str, industry: bool = False, market_cap: bool = False
+    ):
+        """设置单个因子的中性化配置。"""
+        self.neutralization_config[factor_name] = {
+            "industry": bool(industry),
+            "market_cap": bool(market_cap),
+        }
+
+    def set_industry_column(self, industry_col: str):
+        """设置行业字段（industry_sw1 或 industry_sw2）。"""
+        self.industry_col = industry_col
+
+    def set_industry_map(self, industry_map: Optional[Dict[str, str]]):
+        """设置行业映射（stock_code -> 行业）。"""
+        self.industry_map = industry_map or {}
+
     def calculate(
         self, df: pd.DataFrame, factor_params: Optional[Dict[str, Dict]] = None
     ) -> pd.DataFrame:
@@ -106,6 +127,14 @@ class MultiFactorCalculator:
             df_result = factor_calculator.calculate(df_result, **params)
             factor_col = factor_calculator.get_factor_column()
             factor_columns.append(factor_col)
+
+        # 市值对数处理，并准备中性化所需的对数市值字段
+        df_result = self._prepare_log_market_cap(df_result)
+
+        # 因子中性化（可选）
+        if self.neutralization_config:
+            print("正在进行因子中性化...")
+            df_result = self._neutralize_factors(df_result)
 
         # 标准化因子值（可选）
         if self.standardize_factors:
@@ -204,6 +233,140 @@ class MultiFactorCalculator:
 
         return df_result
 
+    def _prepare_log_market_cap(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        准备对数市值字段：
+        1) 市值因子本身进行对数变换（满足“市值因子做对数处理”）
+        2) 生成中性化用的 _neutralize_log_market_cap
+        """
+        df_result = df.copy()
+
+        market_cap_series = self._resolve_market_cap_series(df_result)
+        market_cap_series = pd.to_numeric(market_cap_series, errors="coerce")
+
+        log_market_cap = pd.Series(np.nan, index=df_result.index, dtype=float)
+        valid_market_cap = market_cap_series > 0
+        log_market_cap.loc[valid_market_cap] = np.log(market_cap_series.loc[valid_market_cap])
+        df_result["_neutralize_log_market_cap"] = log_market_cap
+
+        market_factor_col = None
+        for factor_calculator in self.factor_calculators.values():
+            if factor_calculator.name == "市值":
+                market_factor_col = factor_calculator.get_factor_column()
+                break
+
+        if market_factor_col and market_factor_col in df_result.columns:
+            factor_values = pd.to_numeric(df_result[market_factor_col], errors="coerce")
+            log_factor_values = pd.Series(np.nan, index=df_result.index, dtype=float)
+            valid_factor_values = factor_values > 0
+            log_factor_values.loc[valid_factor_values] = np.log(
+                factor_values.loc[valid_factor_values]
+            )
+            df_result[market_factor_col] = log_factor_values
+
+        return df_result
+
+    def _resolve_market_cap_series(self, df: pd.DataFrame) -> pd.Series:
+        """按优先级解析市值序列（亿元）。"""
+        if "market" in df.columns:
+            return df["market"]
+        if "market_cap" in df.columns:
+            return df["market_cap"]
+        if "amount" in df.columns and "turn" in df.columns:
+            turn = pd.to_numeric(df["turn"], errors="coerce").replace(0, np.nan)
+            amount = pd.to_numeric(df["amount"], errors="coerce")
+            return amount / turn / 1e6
+        return pd.Series(np.nan, index=df.index, dtype=float)
+
+    def _neutralize_factors(self, df: pd.DataFrame) -> pd.DataFrame:
+        """按交易日进行横截面中性化，使用残差作为中性化后因子值。"""
+        df_result = df.copy()
+
+        if self.industry_map and "stock_code" in df_result.columns:
+            df_result[self.industry_col] = df_result["stock_code"].map(self.industry_map)
+
+        factor_col_to_name = {
+            factor_calculator.get_factor_column(): factor_name
+            for factor_name, factor_calculator in self.factor_calculators.items()
+        }
+
+        for trade_date in df_result["trade_date"].dropna().unique():
+            date_mask = df_result["trade_date"] == trade_date
+            date_df = df_result.loc[date_mask]
+
+            for factor_col, factor_name in factor_col_to_name.items():
+                if factor_col not in date_df.columns:
+                    continue
+
+                config = self.neutralization_config.get(factor_name, {})
+                use_industry = bool(config.get("industry", False))
+                use_market_cap = bool(config.get("market_cap", False))
+
+                # 市值因子不对市值本身做中性化，避免自回归
+                if factor_name == "市值因子":
+                    use_market_cap = False
+
+                if not use_industry and not use_market_cap:
+                    continue
+
+                y = pd.to_numeric(date_df[factor_col], errors="coerce")
+                valid_mask = y.notna()
+
+                model_parts = []
+
+                if use_industry and self.industry_col in date_df.columns:
+                    industry_series = date_df[self.industry_col]
+                    valid_mask = valid_mask & industry_series.notna()
+                    industry_dummies = pd.get_dummies(
+                        industry_series.astype(str),
+                        prefix="ind",
+                        drop_first=True,
+                        dtype=float,
+                    )
+                    if not industry_dummies.empty:
+                        model_parts.append(industry_dummies)
+
+                if use_market_cap and "_neutralize_log_market_cap" in date_df.columns:
+                    log_market_cap = pd.to_numeric(
+                        date_df["_neutralize_log_market_cap"], errors="coerce"
+                    )
+                    valid_mask = valid_mask & log_market_cap.notna()
+                    model_parts.append(pd.DataFrame({"log_market_cap": log_market_cap}))
+
+                if valid_mask.sum() < self.min_neutralization_samples:
+                    continue
+
+                if not model_parts:
+                    continue
+
+                x_df = pd.concat(model_parts, axis=1).loc[valid_mask]
+                y_fit = y.loc[valid_mask]
+
+                x_df = x_df.dropna()
+                y_fit = y_fit.loc[x_df.index]
+
+                if len(x_df) < self.min_neutralization_samples:
+                    continue
+
+                # 样本数需大于参数数，避免欠定问题
+                if x_df.shape[0] <= (x_df.shape[1] + 1):
+                    continue
+
+                x_np = x_df.to_numpy(dtype=float)
+                intercept = np.ones((x_np.shape[0], 1), dtype=float)
+                x_with_intercept = np.concatenate([intercept, x_np], axis=1)
+                y_np = y_fit.to_numpy(dtype=float)
+
+                try:
+                    beta, *_ = np.linalg.lstsq(x_with_intercept, y_np, rcond=None)
+                except np.linalg.LinAlgError:
+                    continue
+
+                residuals = y_np - x_with_intercept @ beta
+                df_result.loc[y_fit.index, factor_col] = residuals
+
+        return df_result
+
     def get_factor_column(self) -> str:
         """返回复合因子列名"""
         return "composite_factor"
@@ -257,6 +420,7 @@ def run_multi_factor_backtesting(
     factor_params: Optional[Dict[str, Dict]] = None,
     filter_pipeline: Optional[StockFilterPipeline] = None,
     listed_dates: Optional[pd.Series] = None,
+    industry_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[set, Dict, Dict]:
     """
     多因子回测数据处理函数
@@ -272,6 +436,9 @@ def run_multi_factor_backtesting(
     Returns:
         tuple: (stock_list, buy_dates, sell_dates)
     """
+    if industry_map:
+        multi_factor_calculator.set_industry_map(industry_map)
+
     # 计算多因子值
     df = multi_factor_calculator.calculate(df, factor_params)
     composite_factor_col = multi_factor_calculator.get_factor_column()
