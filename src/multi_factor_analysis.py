@@ -281,7 +281,7 @@ def main():
     if enable_listing_age_filter:
         listing_days_option = st.sidebar.selectbox(
             "最短上市时长（自然日）",
-            options=[365, 730, 1095, 1460],
+            options=[60, 180, 365, 730, 1095, 1460],
             index=0,
             help="365约等于1年，730约等于2年",
         )
