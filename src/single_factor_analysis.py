@@ -315,13 +315,6 @@ def run_single_factor_backtesting(
     df = factor_calculator.calculate(df, **factor_params)
     factor_col = factor_calculator.get_factor_column()
 
-    # 预计算上市起始日期，供上市时长过滤复用
-    first_trade_dates = (
-        df.loc[df["trade_date"].notna(), ["stock_code", "trade_date"]]
-        .groupby("stock_code")["trade_date"]
-        .min()
-    )
-
     buy_dates = {}
     sell_dates = {}
     position = set()
@@ -342,10 +335,9 @@ def run_single_factor_backtesting(
 
         if filter_pipeline:
             filter_context = StockFilterContext(
-                trade_date=all_trade_dates[i],
+                trade_date=pd.Timestamp(all_trade_dates[i]),
                 universe_df=df,
                 listed_dates=listed_dates,
-                first_trade_dates=first_trade_dates,
             )
             valid_stocks = filter_pipeline.apply(valid_stocks, filter_context)
 

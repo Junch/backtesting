@@ -634,9 +634,7 @@ def main():
                             for filter_desc in active_filters:
                                 st.write(f"- {filter_desc}")
                             if enable_listing_age_filter:
-                                st.write(
-                                    "- 上市日期来源: stock_basic.listed_date(缺失时回退首个交易日)"
-                                )
+                                st.write("- 上市日期来源: stock_basic.listed_date")
                         else:
                             st.write("- 前置过滤: 未启用")
 
@@ -853,18 +851,11 @@ def main():
                         (df["trade_date"] == signal_date) & (df[composite_col].notna())
                     ].copy()
 
-                    first_trade_dates = (
-                        df.loc[df["trade_date"].notna(), ["stock_code", "trade_date"]]
-                        .groupby("stock_code")["trade_date"]
-                        .min()
-                    )
-
                     if filter_pipeline:
                         filter_context = StockFilterContext(
                             trade_date=signal_date,
                             universe_df=df,
                             listed_dates=listed_dates,
-                            first_trade_dates=first_trade_dates,
                         )
                         day_df = filter_pipeline.apply(day_df, filter_context)
 

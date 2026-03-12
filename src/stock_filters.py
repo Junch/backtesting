@@ -14,7 +14,6 @@ class StockFilterContext:
     trade_date: pd.Timestamp
     universe_df: pd.DataFrame
     listed_dates: Optional[pd.Series] = None
-    first_trade_dates: Optional[pd.Series] = None
 
 
 class BaseStockFilter:
@@ -87,21 +86,6 @@ class ListingAgeFilter(BaseStockFilter):
     def __init__(self, min_days: int = 365):
         self.min_days = int(min_days)
 
-    def _compute_first_trade_dates(self, universe_df: pd.DataFrame) -> pd.Series:
-        required_cols = {"stock_code", "trade_date"}
-        if not required_cols.issubset(universe_df.columns):
-            return pd.Series(dtype="datetime64[ns]")
-
-        valid_mask = universe_df["trade_date"].notna()
-        if "close" in universe_df.columns:
-            valid_mask = valid_mask & universe_df["close"].notna()
-
-        return (
-            universe_df.loc[valid_mask, ["stock_code", "trade_date"]]
-            .groupby("stock_code")["trade_date"]
-            .min()
-        )
-
     def _resolve_listed_dates(self, context: StockFilterContext) -> pd.Series:
         if context.listed_dates is None:
             return pd.Series(dtype="datetime64[ns]")
@@ -132,44 +116,22 @@ class ListingAgeFilter(BaseStockFilter):
             return candidates
 
         listed_dates = self._resolve_listed_dates(context)
-        first_trade_dates = context.first_trade_dates
-        if first_trade_dates is None:
-            first_trade_dates = self._compute_first_trade_dates(context.universe_df)
-
-        if listed_dates.empty and first_trade_dates.empty:
+        if listed_dates.empty:
             return candidates.iloc[0:0]
 
         result = candidates.copy()
         listed_dates_df = listed_dates.rename("_listed_date_tmp").reset_index()
-        first_dates_df = first_trade_dates.rename("_first_trade_date_tmp").reset_index()
         result = result.merge(listed_dates_df, on="stock_code", how="left")
-        result = result.merge(first_dates_df, on="stock_code", how="left")
-
-        result["_effective_listed_date_tmp"] = result["_listed_date_tmp"].where(
-            result["_listed_date_tmp"].notna(), result["_first_trade_date_tmp"]
-        )
 
         trade_date = pd.Timestamp(context.trade_date)
-        listing_days = (trade_date - result["_effective_listed_date_tmp"]).dt.days
-        universe_min_date = pd.to_datetime(
-            context.universe_df["trade_date"], errors="coerce"
-        ).min()
-        has_earliest_history_boundary = (
-            result["_first_trade_date_tmp"] <= universe_min_date
-        )
-        eligible_mask = (listing_days >= self.min_days) | has_earliest_history_boundary
+        listing_days = (trade_date - result["_listed_date_tmp"]).dt.days
+        eligible_mask = listing_days >= self.min_days
 
-        result = result.loc[eligible_mask].drop(
-            columns=[
-                "_listed_date_tmp",
-                "_first_trade_date_tmp",
-                "_effective_listed_date_tmp",
-            ]
-        )
+        result = result.loc[eligible_mask].drop(columns=["_listed_date_tmp"])
         return result
 
     def description(self) -> str:
-        return f"上市时长过滤: 至少 {self.min_days} 个自然日(优先listed_date)"
+        return f"上市时长过滤: 至少 {self.min_days} 个自然日(仅listed_date)"
 
 
 class StockFilterPipeline:
