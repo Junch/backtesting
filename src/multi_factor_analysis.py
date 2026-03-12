@@ -910,6 +910,8 @@ def main():
 
                     listed_dates = None
                     stock_name_map: Dict[str, str] = {}
+                    industry_sw1_map: Dict[str, str] = {}
+                    industry_sw2_map: Dict[str, str] = {}
                     basic_df = findata.get_stock_basic_by_sector(sector_name)
                     if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
                         if {
@@ -933,6 +935,24 @@ def main():
                                 basic_df.dropna(subset=["stock_code", name_col])
                                 .drop_duplicates(subset=["stock_code"])
                                 .set_index("stock_code")[name_col]
+                                .astype(str)
+                                .to_dict()
+                            )
+
+                        if {"stock_code", "industry_sw1"}.issubset(basic_df.columns):
+                            industry_sw1_map = (
+                                basic_df.dropna(subset=["stock_code", "industry_sw1"])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")["industry_sw1"]
+                                .astype(str)
+                                .to_dict()
+                            )
+
+                        if {"stock_code", "industry_sw2"}.issubset(basic_df.columns):
+                            industry_sw2_map = (
+                                basic_df.dropna(subset=["stock_code", "industry_sw2"])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")["industry_sw2"]
                                 .astype(str)
                                 .to_dict()
                             )
@@ -1254,6 +1274,8 @@ def main():
 
                     listed_dates = None
                     stock_name_map: Dict[str, str] = {}
+                    industry_sw1_map: Dict[str, str] = {}
+                    industry_sw2_map: Dict[str, str] = {}
                     basic_df = findata.get_stock_basic_by_sector(sector_name)
                     if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
                         if enable_listing_age_filter and {
@@ -1277,6 +1299,24 @@ def main():
                                 basic_df.dropna(subset=["stock_code", name_col])
                                 .drop_duplicates(subset=["stock_code"])
                                 .set_index("stock_code")[name_col]
+                                .astype(str)
+                                .to_dict()
+                            )
+
+                        if {"stock_code", "industry_sw1"}.issubset(basic_df.columns):
+                            industry_sw1_map = (
+                                basic_df.dropna(subset=["stock_code", "industry_sw1"])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")["industry_sw1"]
+                                .astype(str)
+                                .to_dict()
+                            )
+
+                        if {"stock_code", "industry_sw2"}.issubset(basic_df.columns):
+                            industry_sw2_map = (
+                                basic_df.dropna(subset=["stock_code", "industry_sw2"])
+                                .drop_duplicates(subset=["stock_code"])
+                                .set_index("stock_code")["industry_sw2"]
                                 .astype(str)
                                 .to_dict()
                             )
@@ -1327,6 +1367,12 @@ def main():
                     ranked_df["stock_name"] = ranked_df["stock_name"].fillna(
                         ranked_df["stock_code"]
                     )
+                    ranked_df["industry_sw1"] = ranked_df["stock_code"].map(
+                        industry_sw1_map
+                    )
+                    ranked_df["industry_sw2"] = ranked_df["stock_code"].map(
+                        industry_sw2_map
+                    )
                     ranked_df.insert(0, "rank", np.arange(1, len(ranked_df) + 1))
 
                     # 当日市值(亿元): market_cap > market > amount/turn/1e6
@@ -1363,6 +1409,8 @@ def main():
                         "rank",
                         "stock_code",
                         "stock_name",
+                        "industry_sw1",
+                        "industry_sw2",
                         "当日市值(亿元)",
                         "PE(TTM)",
                     ]
