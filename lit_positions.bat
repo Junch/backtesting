@@ -1,0 +1,1 @@
+streamlit run qmt\qmt_streamlit.py

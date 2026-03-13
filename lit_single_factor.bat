@@ -1,0 +1,1 @@
+streamlit run src\single_factor_analysis.py

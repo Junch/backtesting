@@ -1,0 +1,1 @@
+streamlit run src\multi_factor_analysis.py
