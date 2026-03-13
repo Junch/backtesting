@@ -3,3 +3,4 @@ saved_backtests/
 log/
 .env
 *.csv
+qmt/quant_stocks.json

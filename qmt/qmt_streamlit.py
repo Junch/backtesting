@@ -2,6 +2,7 @@ import streamlit as st
 from xtquant import xtdata
 from xtquant import xttrader
 from xtquant import xtconstant
+import json
 import time
 import pandas as pd
 from xtquant.xttype import StockAccount
@@ -40,6 +41,33 @@ ACCOUNT = os.getenv("QMT_ACCOUNT")
 QMT_PATH = os.getenv("QMT_PATH", r"C:\国金证券QMT交易端\userdata_mini")
 xtdata.enable_hello = False
 
+_QUANT_STOCKS_PATH = Path(__file__).resolve().parent / "quant_stocks.json"
+
+
+def load_quant_stocks():
+    """从 JSON 文件加载量化交易股票代码集合"""
+    if not _QUANT_STOCKS_PATH.exists():
+        return set()
+    try:
+        data = json.loads(_QUANT_STOCKS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return set(data)
+        return set()
+    except Exception:
+        return set()
+
+
+def save_quant_stocks(stock_codes):
+    """将量化交易股票代码集合保存到 JSON 文件"""
+    try:
+        _QUANT_STOCKS_PATH.write_text(
+            json.dumps(sorted(stock_codes), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        st.error(f"保存量化股票列表失败: {e}")
+
+
 def init_page_config():
     """初始化页面配置"""
     st.set_page_config(
@@ -61,6 +89,8 @@ def init_session_state():
         st.session_state.selected_order_ids = []
     if 'orders_last_refresh_ts' not in st.session_state:
         st.session_state.orders_last_refresh_ts = None
+    if 'quant_stock_codes' not in st.session_state:
+        st.session_state.quant_stock_codes = load_quant_stocks()
 
 
 def _order_direction_text(order):
@@ -534,41 +564,38 @@ def color_price_change(val):
     else:
         return 'color: black'
 
-def display_positions_table(positions):
+def display_positions_table(positions, total_available_funds, title="📊 持仓信息",
+                            show_index_comparison=True, key_prefix="main"):
     """显示持仓表格"""
-    st.header("📊 持仓信息")
-    st.info(f"📦 当前持仓数量: {len(positions)}")
-    
-    # 指数列表
-    indices = {
-        "上证50": "000016.SH",
-        "沪深300": "000300.SH", 
-        "中证500": "000905.SH",
-        "中证1000": "000852.SH",
-        "创业板": "399006.SZ",
-        "科创50": "000688.SH"
-    }
-    
-    # 指数选择器
-    st.subheader("📈 指数对比")
+    st.subheader(title)
+    st.caption(f"共 {len(positions)} 只")
+
     selected_indices = []
-    
-    # 创建复选框布局
-    cols = st.columns(3)
-    for i, (index_name, index_code) in enumerate(indices.items()):
-        with cols[i % 3]:
-            if st.checkbox(index_name, key=f"index_{index_code}"):
-                selected_indices.append((index_name, index_code))
-    
-    # 计算总的可用资金（持仓市值 + 可用资金）
-    total_market_value = sum(p.market_value for p in positions)
-    available_cash = st.session_state.asset.cash if hasattr(st.session_state, 'asset') and st.session_state.asset else 0
-    total_available_funds = total_market_value + available_cash
-    
+    if show_index_comparison:
+        # 指数列表
+        indices = {
+            "上证50": "000016.SH",
+            "沪深300": "000300.SH",
+            "中证500": "000905.SH",
+            "中证1000": "000852.SH",
+            "创业板": "399006.SZ",
+            "科创50": "000688.SH"
+        }
+
+        # 指数选择器
+        st.markdown("**📈 指数对比**")
+
+        # 创建复选框布局
+        cols = st.columns(3)
+        for i, (index_name, index_code) in enumerate(indices.items()):
+            with cols[i % 3]:
+                if st.checkbox(index_name, key=f"index_{index_code}_{key_prefix}"):
+                    selected_indices.append((index_name, index_code))
+
     # 构建持仓数据框
     position_data = [calculate_position_metrics(position, total_available_funds) for position in positions]
     df_positions = pd.DataFrame(position_data)
-    
+
     # 添加选中的指数数据
     if selected_indices:
         with st.spinner("正在获取指数数据..."):
@@ -577,12 +604,8 @@ def display_positions_table(positions):
                 index_metrics = calculate_index_metrics(index_name, index_code)
                 if index_metrics:
                     index_data.append(index_metrics)
-            
+
             if index_data:
-                df_indices = pd.DataFrame(index_data)
-                
-                # 为了避免FutureWarning，创建一个统一的数据框
-                # 将指数数据和持仓数据合并到一个列表中，然后一次性创建DataFrame
                 all_data = index_data + position_data
                 df_positions = pd.DataFrame(all_data)
 
@@ -593,7 +616,7 @@ def display_positions_table(positions):
         data=df_positions.style.map(color_price_change, subset=['涨跌幅', '7日涨跌', '1月涨跌', '1年涨跌', '今日盈亏', '年初至今']),
         width="stretch",
         hide_index=True,
-        height=height,  # 设置为None以显示所有行，不出现滚动条
+        height=height,
         column_config={
             "证券代码": st.column_config.TextColumn("证券代码", width="small"),
             "证券名称": st.column_config.TextColumn("证券名称", width="small"),
@@ -613,9 +636,9 @@ def display_positions_table(positions):
         }
     )
 
-def display_position_statistics(positions):
+def display_position_statistics(positions, title="📈 持仓统计"):
     """显示持仓统计"""
-    st.subheader("📈 持仓统计")
+    st.subheader(title)
     
     # 先计算今日盈亏总额，供总市值使用
     total_daily_profit = 0
@@ -653,12 +676,102 @@ def display_position_statistics(positions):
         else:
             st.metric("涨跌幅", "0.00%")
 
+def display_quant_transfer_ui(positions):
+    """显示量化交易股票转移控件"""
+    quant_codes = st.session_state.quant_stock_codes
+
+    # 构建 stock_code -> 显示名称 映射
+    stock_map = {}
+    for p in positions:
+        detail = xtdata.get_instrument_detail(p.stock_code)
+        name = detail.get("InstrumentName", "N/A")
+        stock_map[p.stock_code] = f"{p.stock_code} ({name})"
+
+    regular_codes = [p.stock_code for p in positions if p.stock_code not in quant_codes]
+    quant_codes_held = [p.stock_code for p in positions if p.stock_code in quant_codes]
+
+    with st.expander("🔄 量化交易分组管理", expanded=False):
+        # 移入量化
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            to_quant = st.multiselect(
+                "选择移入量化交易的股票",
+                options=regular_codes,
+                format_func=lambda code: stock_map.get(code, code),
+                key="move_to_quant",
+            )
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("移入量化 ➡️", key="btn_to_quant"):
+                if to_quant:
+                    st.session_state.quant_stock_codes |= set(to_quant)
+                    save_quant_stocks(st.session_state.quant_stock_codes)
+                    st.rerun()
+
+        # 移出量化
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            from_quant = st.multiselect(
+                "选择移出量化交易的股票",
+                options=quant_codes_held,
+                format_func=lambda code: stock_map.get(code, code),
+                key="move_from_quant",
+            )
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("⬅️ 移出量化", key="btn_from_quant"):
+                if from_quant:
+                    st.session_state.quant_stock_codes -= set(from_quant)
+                    save_quant_stocks(st.session_state.quant_stock_codes)
+                    st.rerun()
+
+
 def display_positions_info():
     """显示持仓信息"""
     if hasattr(st.session_state, 'positions') and st.session_state.positions:
         positions = st.session_state.positions
-        display_positions_table(positions)
-        display_position_statistics(positions)
+
+        st.header("📊 持仓信息")
+        st.info(f"📦 当前持仓数量: {len(positions)}")
+
+        # 转移控件
+        display_quant_transfer_ui(positions)
+
+        # 拆分持仓
+        quant_codes = st.session_state.quant_stock_codes
+        regular_positions = [p for p in positions if p.stock_code not in quant_codes]
+        quant_positions = [p for p in positions if p.stock_code in quant_codes]
+
+        # 计算总资产（所有持仓 + 可用资金），两个表格共用
+        total_market_value = sum(p.market_value for p in positions)
+        available_cash = (st.session_state.asset.cash
+                          if hasattr(st.session_state, 'asset') and st.session_state.asset
+                          else 0)
+        total_available_funds = total_market_value + available_cash
+
+        # 常规持仓
+        if regular_positions:
+            display_positions_table(
+                regular_positions, total_available_funds,
+                title="📊 常规持仓", show_index_comparison=True, key_prefix="regular",
+            )
+            display_position_statistics(regular_positions, title="📈 常规持仓统计")
+        else:
+            st.subheader("📊 常规持仓")
+            st.info("📭 所有持仓已归入量化交易")
+
+        st.markdown("---")
+
+        # 量化交易持仓
+        if quant_positions:
+            display_positions_table(
+                quant_positions, total_available_funds,
+                title="🤖 量化交易持仓", show_index_comparison=False, key_prefix="quant",
+            )
+            display_position_statistics(quant_positions, title="🤖 量化持仓统计")
+        else:
+            st.subheader("🤖 量化交易持仓")
+            st.info("📭 暂无量化交易持仓")
     else:
         st.header("📊 持仓信息")
         st.info("📭 当前无持仓")
