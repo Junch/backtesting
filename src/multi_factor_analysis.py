@@ -1,5 +1,5 @@
 import backtrader as bt
-from datetime import datetime
+from datetime import date, datetime
 import warnings
 import csv
 import io
@@ -49,6 +49,26 @@ from order_utils import (
     _fetch_realtime_prices,
     _calculate_allocated_quantities,
 )
+from strategy_config_io import (
+    build_backtest_results,
+    build_strategy_config,
+    list_saved_strategies,
+    load_strategy_yaml,
+    save_strategy_yaml,
+)
+
+
+def _parse_date_or_default(value, fallback: date) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return pd.to_datetime(value).date()
+        except Exception:
+            return fallback
+    return fallback
 
 
 # --- Streamlit 应用主程序 ---
@@ -63,6 +83,42 @@ def main():
     # 侧边栏参数配置
     st.sidebar.header("多因子策略配置")
 
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    saved_backtests_dir = os.path.join(project_root, "saved_backtests")
+    loaded_strategy_config = st.session_state.get("loaded_multi_factor_config", {})
+    save_success_path = st.session_state.pop("multi_factor_saved_path", None)
+
+    if save_success_path:
+        st.sidebar.success(f"保存成功: {save_success_path}")
+
+    with st.sidebar.expander("📂 加载已保存配置", expanded=False):
+        saved_items = list_saved_strategies(saved_backtests_dir)
+        if not saved_items:
+            st.info("暂无已保存配置")
+        else:
+            path_to_label = {item["path"]: item["label"] for item in saved_items}
+            selected_path = st.selectbox(
+                "选择配置文件",
+                options=list(path_to_label.keys()),
+                format_func=lambda p: path_to_label.get(p, p),
+                key="load_multi_factor_select",
+            )
+
+            if st.button("加载配置", key="load_multi_factor_btn", width="stretch"):
+                try:
+                    payload = load_strategy_yaml(selected_path)
+                    st.session_state["loaded_multi_factor_config"] = payload
+                    st.success("配置加载成功，已应用到当前页面")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"加载配置失败: {str(e)}")
+
+    factors_cfg = loaded_strategy_config.get("factors", {})
+    neutralization_cfg = loaded_strategy_config.get("neutralization", {})
+    backtest_cfg = loaded_strategy_config.get("backtest_params", {})
+    filters_cfg = loaded_strategy_config.get("filters", {})
+    risk_cfg = loaded_strategy_config.get("risk", {}).get("stop_loss", {})
+
     # 因子选择区域
     st.sidebar.subheader("📊 因子选择与权重设置")
 
@@ -71,17 +127,25 @@ def main():
 
     # 中性化全局设置
     st.sidebar.subheader("⚖️ 因子中性化设置")
+    neutralization_factor_cfg = neutralization_cfg.get("per_factor", {})
     enable_factor_neutralization = st.sidebar.checkbox(
         "启用因子中性化",
-        value=False,
+        value=bool(neutralization_cfg.get("enabled", False)),
         help="按交易日横截面对因子做行业/市值中性化，使用残差参与打分",
     )
-    neutralization_industry_col = "industry_sw1"
+    default_industry_col = neutralization_cfg.get("industry_column", "industry_sw1")
+    neutralization_industry_col = default_industry_col
     if enable_factor_neutralization:
+        industry_options = ["industry_sw1", "industry_sw2"]
+        industry_index = (
+            industry_options.index(default_industry_col)
+            if default_industry_col in industry_options
+            else 0
+        )
         neutralization_industry_col = st.sidebar.selectbox(
             "行业字段",
-            options=["industry_sw1", "industry_sw2"],
-            index=0,
+            options=industry_options,
+            index=industry_index,
             help="industry_sw1=申万一级，industry_sw2=申万二级",
         )
     multi_factor_calculator.set_industry_column(neutralization_industry_col)
@@ -96,9 +160,11 @@ def main():
     st.sidebar.write("**选择要使用的因子：**")
 
     for factor_name in factor_names:
+        loaded_factor_cfg = factors_cfg.get(factor_name, {})
         # 因子选择复选框
         factor_selected = st.sidebar.checkbox(
             f"{factor_name}",
+            value=bool(loaded_factor_cfg),
             key=f"select_{factor_name}",
             help=AVAILABLE_FACTORS[factor_name].description,
         )
@@ -109,7 +175,7 @@ def main():
                 f"{factor_name} 权重",
                 min_value=0.1,
                 max_value=3.0,
-                value=1.0,
+                value=float(loaded_factor_cfg.get("weight", 1.0)),
                 step=0.1,
                 key=f"weight_{factor_name}",
                 help=f"设置 {factor_name} 在复合因子中的权重",
@@ -124,19 +190,27 @@ def main():
 
             # 因子特定参数设置
             st.sidebar.write(f"**{factor_name} 参数：**")
+            loaded_factor_params = loaded_factor_cfg.get("params", {})
 
             if factor_name == "市值因子":
+                market_options = ["总市值", "流通市值"]
+                default_market_option = loaded_factor_params.get("market_option", "总市值")
+                market_option_idx = (
+                    market_options.index(default_market_option)
+                    if default_market_option in market_options
+                    else 0
+                )
                 market_option = st.sidebar.selectbox(
                     "市值计算方式",
-                    ["总市值", "流通市值"],
-                    index=0,
+                    market_options,
+                    index=market_option_idx,
                     key=f"market_option_{factor_name}",
                 )
                 smooth_window = st.sidebar.slider(
                     "市值平滑窗口（交易日）",
                     min_value=1,
                     max_value=20,
-                    value=7,
+                    value=int(loaded_factor_params.get("smooth_window", 7)),
                     key=f"smooth_window_{factor_name}",
                 )
                 factor_params[factor_name] = {
@@ -149,7 +223,7 @@ def main():
                     "动量回看期（交易日）",
                     min_value=5,
                     max_value=60,
-                    value=21,
+                    value=int(loaded_factor_params.get("momentum_period", 21)),
                     key=f"momentum_period_{factor_name}",
                 )
                 factor_params[factor_name] = {"momentum_period": momentum_period}
@@ -159,7 +233,7 @@ def main():
                     "波动率计算周期（交易日）",
                     min_value=5,
                     max_value=60,
-                    value=20,
+                    value=int(loaded_factor_params.get("volatility_period", 20)),
                     key=f"volatility_period_{factor_name}",
                 )
                 factor_params[factor_name] = {"volatility_period": volatility_period}
@@ -169,14 +243,21 @@ def main():
                     "换手率平滑周期（交易日）",
                     min_value=5,
                     max_value=60,
-                    value=20,
+                    value=int(loaded_factor_params.get("turnover_period", 20)),
                     key=f"turnover_period_{factor_name}",
                 )
                 factor_params[factor_name] = {"turnover_period": turnover_period}
 
             if enable_factor_neutralization:
-                default_industry_neutralize = factor_name in ("动量因子", "市值因子")
-                default_market_cap_neutralize = factor_name == "动量因子"
+                loaded_neutralize_cfg = neutralization_factor_cfg.get(factor_name, {})
+                default_industry_neutralize = bool(
+                    loaded_neutralize_cfg.get(
+                        "industry", factor_name in ("动量因子", "市值因子")
+                    )
+                )
+                default_market_cap_neutralize = bool(
+                    loaded_neutralize_cfg.get("market_cap", factor_name == "动量因子")
+                )
 
                 ncol1, ncol2 = st.sidebar.columns(2)
                 with ncol1:
@@ -239,35 +320,65 @@ def main():
         "创业板": "399006.SZ",
     }
     sector_names = list(sector_options.keys())
-    sector_name = st.sidebar.selectbox("选择板块", sector_names, index=2)
+    default_sector = backtest_cfg.get("sector", "沪深300")
+    sector_index = sector_names.index(default_sector) if default_sector in sector_names else 2
+    sector_name = st.sidebar.selectbox("选择板块", sector_names, index=sector_index)
 
     # 日期选择
+    default_start_date = _parse_date_or_default(
+        backtest_cfg.get("start_date"), datetime(2021, 1, 1).date()
+    )
+    default_end_date = _parse_date_or_default(
+        backtest_cfg.get("end_date"), datetime(2021, 12, 31).date()
+    )
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        start_date = st.date_input("开始日期", value=datetime(2021, 1, 1))
+        start_date = st.date_input("开始日期", value=default_start_date)
     with col2:
-        end_date = st.date_input("结束日期", value=datetime(2021, 12, 31))
+        end_date = st.date_input("结束日期", value=default_end_date)
 
     # 基础策略参数
     rebalance_period = st.sidebar.slider(
-        "调仓周期（交易日）", min_value=5, max_value=60, value=21
+        "调仓周期（交易日）",
+        min_value=5,
+        max_value=60,
+        value=int(backtest_cfg.get("rebalance_period", 21)),
     )
-    hold_top = st.sidebar.slider("持有股票数量", min_value=5, max_value=30, value=10)
+    hold_top = st.sidebar.slider(
+        "持有股票数量",
+        min_value=5,
+        max_value=30,
+        value=int(backtest_cfg.get("hold_top", 10)),
+    )
 
     # 前置过滤参数（可扩展）
     st.sidebar.subheader("前置过滤")
     filter_pipeline = StockFilterPipeline()
 
-    enable_market_cap_filter = st.sidebar.checkbox("启用市值范围过滤", value=False)
+    market_cap_cfg = filters_cfg.get("market_cap", {})
+    default_min_market_cap = float(market_cap_cfg.get("min_billion", 0.0))
+    default_max_market_cap = float(market_cap_cfg.get("max_billion", 2000.0))
+    min_market_cap = default_min_market_cap
+    max_market_cap = default_max_market_cap
+
+    enable_market_cap_filter = st.sidebar.checkbox(
+        "启用市值范围过滤", value=bool(market_cap_cfg.get("enabled", False))
+    )
     if enable_market_cap_filter:
         col_mc1, col_mc2 = st.sidebar.columns(2)
         with col_mc1:
             min_market_cap = st.number_input(
-                "最小市值(亿元)", min_value=0.0, value=0.0, step=10.0
+                "最小市值(亿元)",
+                min_value=0.0,
+                value=default_min_market_cap,
+                step=10.0,
             )
         with col_mc2:
             max_market_cap = st.number_input(
-                "最大市值(亿元)", min_value=0.0, value=2000.0, step=10.0
+                "最大市值(亿元)",
+                min_value=0.0,
+                value=default_max_market_cap,
+                step=10.0,
             )
         if max_market_cap < min_market_cap:
             st.sidebar.warning("最大市值小于最小市值，将自动交换两者")
@@ -276,13 +387,23 @@ def main():
             MarketCapRangeFilter(min_cap=min_market_cap, max_cap=max_market_cap)
         )
 
+    listing_cfg = filters_cfg.get("listing_age", {})
     listing_min_days = None
-    enable_listing_age_filter = st.sidebar.checkbox("启用上市时长过滤", value=False)
+    enable_listing_age_filter = st.sidebar.checkbox(
+        "启用上市时长过滤", value=bool(listing_cfg.get("enabled", False))
+    )
     if enable_listing_age_filter:
+        listing_options = [60, 180, 365, 730, 1095, 1460]
+        default_listing_min_days = int(listing_cfg.get("min_days", 60))
+        listing_index = (
+            listing_options.index(default_listing_min_days)
+            if default_listing_min_days in listing_options
+            else 0
+        )
         listing_days_option = st.sidebar.selectbox(
             "最短上市时长（自然日）",
-            options=[60, 180, 365, 730, 1095, 1460],
-            index=0,
+            options=listing_options,
+            index=listing_index,
             help="365约等于1年，730约等于2年",
         )
         listing_min_days = int(listing_days_option)
@@ -290,24 +411,33 @@ def main():
 
     # 因子标准化选项
     standardize_factors = st.sidebar.checkbox(
-        "标准化因子值", value=True, help="对因子值进行标准化处理，消除量纲影响"
+        "标准化因子值",
+        value=bool(backtest_cfg.get("standardize", True)),
+        help="对因子值进行标准化处理，消除量纲影响",
     )
     multi_factor_calculator.set_standardize_factors(standardize_factors)
 
     # 风险控制参数（回测页使用）
     st.sidebar.subheader("🛡️ 风险控制")
-    enable_stop_loss = st.sidebar.checkbox("启用止损", value=False)
+    enable_stop_loss = st.sidebar.checkbox(
+        "启用止损", value=bool(risk_cfg.get("enabled", False))
+    )
     stop_loss_pct = None
-    trailing_stop = False
+    trailing_stop = bool(risk_cfg.get("trailing", False))
 
     if enable_stop_loss:
+        default_stop_loss_percent = float(risk_cfg.get("percentage", 10.0))
         stop_loss_pct = (
             st.sidebar.slider(
-                "止损比例 (%)", min_value=1.0, max_value=20.0, value=10.0, step=0.5
+                "止损比例 (%)",
+                min_value=1.0,
+                max_value=20.0,
+                value=default_stop_loss_percent,
+                step=0.5,
             )
             / 100
         )
-        trailing_stop = st.sidebar.checkbox("启用移动止损", value=False)
+        trailing_stop = st.sidebar.checkbox("启用移动止损", value=trailing_stop)
 
         if trailing_stop:
             st.sidebar.info("移动止损：从最高价回撤超过止损比例时卖出")
@@ -323,6 +453,7 @@ def main():
     with tab_backtest:
         # 主界面展示区域
         col1, col2 = st.columns([2, 1])
+        backtest_snapshot = st.session_state.get("last_multi_factor_backtest")
 
         with col1:
             st.subheader("🎯 多因子策略概览")
@@ -521,6 +652,10 @@ def main():
                     st.subheader("📊 多因子策略性能指标")
 
                     col1, col2, col3, col4, col5 = st.columns(5)
+                    sharpe_value = None
+                    max_dd_value = None
+                    max_dd_len_value = None
+                    annual_return_value = None
 
                     with col1:
                         total_return = (final_value / initial_value - 1) * 100
@@ -528,39 +663,39 @@ def main():
 
                     with col2:
                         try:
-                            sharpe = strat.analyzers.sharpe_ratio.get_analysis()[
+                            sharpe_value = strat.analyzers.sharpe_ratio.get_analysis()[
                                 "sharperatio"
                             ]
-                            if sharpe is None:
-                                sharpe = 0.0
-                            st.metric("夏普比率", f"{sharpe:.3f}")
+                            if sharpe_value is None:
+                                sharpe_value = 0.0
+                            st.metric("夏普比率", f"{sharpe_value:.3f}")
                         except Exception:
                             st.metric("夏普比率", "N/A")
 
                     with col3:
                         try:
-                            max_dd = strat.analyzers.drawdown.get_analysis()["max"][
+                            max_dd_value = strat.analyzers.drawdown.get_analysis()["max"][
                                 "drawdown"
                             ]
-                            st.metric("最大回撤", f"{max_dd:.2f}%")
+                            st.metric("最大回撤", f"{max_dd_value:.2f}%")
                         except Exception:
                             st.metric("最大回撤", "N/A")
 
                     with col4:
                         try:
-                            max_dd_len = strat.analyzers.drawdown.get_analysis()["max"][
-                                "len"
-                            ]
-                            st.metric("最长回撤时间", f"{max_dd_len} 天")
+                            max_dd_len_value = strat.analyzers.drawdown.get_analysis()[
+                                "max"
+                            ]["len"]
+                            st.metric("最长回撤时间", f"{max_dd_len_value} 天")
                         except Exception:
                             st.metric("最长回撤时间", "N/A")
 
                     with col5:
                         try:
-                            annual_return = strat.analyzers.returns.get_analysis()[
+                            annual_return_value = strat.analyzers.returns.get_analysis()[
                                 "rnorm100"
                             ]
-                            st.metric("年化收益率", f"{annual_return:.2f}%")
+                            st.metric("年化收益率", f"{annual_return_value:.2f}%")
                         except Exception:
                             st.metric("年化收益率", "N/A")
 
@@ -597,6 +732,8 @@ def main():
 
                     except Exception as e:
                         st.warning(f"因子分析图表生成失败: {str(e)}")
+
+                    analysis_result = trade_analyzer.get_analysis()
 
                     with st.expander("📋 详细分析结果"):
                         st.write("**多因子策略参数:**")
@@ -664,7 +801,6 @@ def main():
                         st.write(f"- 最终资金: {final_value:,.2f} 元")
                         st.write(f"- 绝对收益: {final_value - initial_value:,.2f} 元")
 
-                        analysis_result = trade_analyzer.get_analysis()
                         if (
                             analysis_result["stock_analysis_df"] is not None
                             and not analysis_result["stock_analysis_df"].empty
@@ -701,9 +837,77 @@ def main():
                                     width="stretch",
                                 )
 
+                    strategy_config = build_strategy_config(
+                        selected_factors=selected_factors,
+                        factor_params=factor_params,
+                        enable_factor_neutralization=enable_factor_neutralization,
+                        neutralization_industry_col=neutralization_industry_col,
+                        neutralization_config=multi_factor_calculator.neutralization_config,
+                        sector_name=sector_name,
+                        start_date=start_date,
+                        end_date=end_date,
+                        rebalance_period=rebalance_period,
+                        hold_top=hold_top,
+                        standardize_factors=standardize_factors,
+                        enable_market_cap_filter=enable_market_cap_filter,
+                        min_market_cap=min_market_cap,
+                        max_market_cap=max_market_cap,
+                        enable_listing_age_filter=enable_listing_age_filter,
+                        listing_min_days=listing_min_days,
+                        enable_stop_loss=enable_stop_loss,
+                        stop_loss_pct=stop_loss_pct,
+                        trailing_stop=trailing_stop,
+                    )
+
+                    backtest_results_payload = build_backtest_results(
+                        initial_value=initial_value,
+                        final_value=final_value,
+                        total_return_pct=total_return,
+                        annual_return_pct=annual_return_value,
+                        sharpe_ratio=sharpe_value,
+                        max_drawdown_pct=max_dd_value,
+                        max_drawdown_days=max_dd_len_value,
+                        loaded_stock_count=len(stock_list),
+                        summary_data=analysis_result.get("summary_data"),
+                        total_commission=analysis_result.get("total_commission"),
+                    )
+
+                    st.session_state["last_multi_factor_backtest"] = {
+                        "strategy_config": strategy_config,
+                        "results": backtest_results_payload,
+                    }
+                    backtest_snapshot = st.session_state.get("last_multi_factor_backtest")
+                    st.info("回测结果已缓存，可点击下方按钮保存为 YAML")
+
                 except Exception as e:
                     st.error(f"多因子回测过程中发生错误: {str(e)}")
                     st.exception(e)
+
+        if backtest_snapshot:
+            st.subheader("💾 保存参数与回测结果")
+            save_note = st.text_input(
+                "保存备注（可选）",
+                key="save_multi_factor_note",
+                placeholder="例如：2021年沪深300，含动量+市值中性化",
+            )
+            if st.button(
+                "💾 保存当前配置与回测结果",
+                key="save_multi_factor_snapshot_btn",
+                width="stretch",
+            ):
+                strategy_config = dict(backtest_snapshot["strategy_config"])
+                if save_note:
+                    strategy_config["description"] = save_note
+
+                saved_path = save_strategy_yaml(
+                    directory=saved_backtests_dir,
+                    strategy_config=strategy_config,
+                    results=backtest_snapshot["results"],
+                )
+                st.session_state["multi_factor_saved_path"] = saved_path
+                st.rerun()
+        else:
+            st.caption("请先运行一次回测，再保存参数与结果")
 
     with tab_picker:
         st.subheader("🌓 盘后选股")

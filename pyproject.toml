@@ -8,6 +8,7 @@ dependencies = [
     "backtrader>=1.9.78.123",
     "cjdata",
     "plotly>=6.6.0",
+    "pyyaml>=6.0",
     "pyecharts>=2.1.0",
     "scikit-learn>=1.8.0",
     "streamlit>=1.55.0",
