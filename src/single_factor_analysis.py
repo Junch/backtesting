@@ -97,9 +97,14 @@ class MarketValueFactor(FactorCalculator):
         # 按股票代码分组，计算移动平均市值，平滑数据
         df = df.sort_values(["stock_code", "trade_date"])
         factor_col = self.get_factor_column()
-        df[factor_col] = df.groupby("stock_code")["market"].transform(
+
+        # 计算平滑后的原始市值
+        raw_market_cap = df.groupby("stock_code")["market"].transform(
             lambda x: x.rolling(window=smooth_window, min_periods=1).mean()
         )
+
+        # 对市值取对数，处理零值和负值
+        df[factor_col] = np.log(raw_market_cap.replace(0, np.nan))
 
         return df
 
@@ -605,7 +610,12 @@ def main():
                     _name="stock_trade_analyzer",
                     data_source=findata,
                 )
-                cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe_ratio")
+                cerebro.addanalyzer(bt.analyzers.SharpeRatio,
+                                     _name="sharpe_ratio",
+                                     timeframe=bt.TimeFrame.Days,
+                                     annualize=True,    
+                                     riskfreerate=0.015,
+                                     factor=242) # 中国股市一年大约 242 个交易日
                 cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
                 cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
 

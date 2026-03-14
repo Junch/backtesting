@@ -409,6 +409,14 @@ def main():
         listing_min_days = int(listing_days_option)
         filter_pipeline.add_filter(ListingAgeFilter(min_days=listing_min_days))
 
+    # 去极值选项
+    winsorize_factors = st.sidebar.checkbox(
+        "去极值 (Winsorization)",
+        value=bool(backtest_cfg.get("winsorize", True)),
+        help="使用MAD方法识别和处理异常值，比传统标准差方法更稳健，适合非正态分布数据",
+    )
+    multi_factor_calculator.set_winsorize_factors(winsorize_factors)
+
     # 因子标准化选项
     standardize_factors = st.sidebar.checkbox(
         "标准化因子值",
@@ -634,7 +642,12 @@ def main():
                         _name="stock_trade_analyzer",
                         data_source=findata,
                     )
-                    cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe_ratio")
+                    cerebro.addanalyzer(bt.analyzers.SharpeRatio, 
+                                        _name="sharpe_ratio",
+                                        timeframe=bt.TimeFrame.Days,
+                                        annualize=True,
+                                        riskfreerate=0.015,
+                                        factor=242) # 中国股市一年大约 242 个交易日
                     cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
                     cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
 
