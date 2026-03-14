@@ -71,7 +71,7 @@ def _fetch_close_prices_from_qmt(
             period="1d",
             start_time=signal_text,
             end_time=signal_text,
-            dividend_type="front",
+            dividend_type="none",
             field_list=["close"],
         )
     except Exception as e:
@@ -134,7 +134,7 @@ def _fetch_close_prices_from_baostock(
                     start_date=start_date,
                     end_date=end_date,
                     frequency="d",
-                    adjustflag="2",
+                    adjustflag="3",
                 )
             except Exception as e:
                 unresolved_codes.append(code)
