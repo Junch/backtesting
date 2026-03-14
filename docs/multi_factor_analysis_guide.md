@@ -88,12 +88,12 @@ streamlit run src/multi_factor_analysis.py --server.address 127.0.0.1 --server.p
 数量计算规则：
 
 1. 单票预算 = 总资金 / 购买股票数量
-2. 股票价格来自 `xtdata.get_full_tick`，优先 `askPrice1`，缺失时回退 `lastPrice`
+2. 股票价格来自信号日收盘价：优先使用 QMT `xtdata.get_market_data_ex` 的 `close`，失败时回退 baostock `query_history_k_data_plus`
 3. 下单数量 = 向下取整到 100 股整数倍
-4. 无法获取实价或预算不足 100 股时，该股票不写入订单
+4. 无法获取收盘价或预算不足 100 股时，该股票不写入订单
 5. 剩余资金保留，不做二次分配
 
-页面会同时展示：实时价、价格来源、单票预算、下单数量、预计下单金额和备注。
+页面会同时展示：收盘价、收盘价来源、单票预算、下单数量、预计下单金额和备注。
 
 ## 系统架构
 

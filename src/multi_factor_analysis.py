@@ -42,11 +42,10 @@ from multi_factor_calculator import (
     plot_factor_analysis,
 )
 from order_utils import (
-    xtdata,
     _resolve_signal_date,
     _get_next_trade_date,
     _build_order_lines,
-    _fetch_realtime_prices,
+    _fetch_close_prices_for_signal_date,
     _calculate_allocated_quantities,
 )
 from strategy_config_io import (
@@ -924,7 +923,7 @@ def main():
 
     with tab_picker:
         st.subheader("🌓 盘后选股")
-        st.caption("按指定日期计算多因子得分并排序，使用 xtdata 实时价格计算次日买入清单")
+        st.caption("按指定日期计算多因子得分并排序，使用信号日收盘价计算次日买入清单（QMT 优先，baostock 回退）")
 
         picker_col1, picker_col2, picker_col3, picker_col4 = st.columns(4)
         with picker_col1:
@@ -1155,10 +1154,6 @@ def main():
                         f"信号日 {signal_date.strftime('%Y-%m-%d')} 选出 {len(ranked_df)} 只候选股票"
                     )
 
-                    if xtdata is None:
-                        st.error("xtdata 不可用，无法按实时价格计算下单数量。请在 miniQMT 环境运行。")
-                        return
-
                     target_buy_count = int(buy_count)
                     if target_buy_count > len(ranked_df):
                         st.warning(
@@ -1172,11 +1167,14 @@ def main():
                     order_pool_count = min(target_buy_count, len(ranked_df))
                     order_pool_df = ranked_df.head(order_pool_count).copy()
 
-                    realtime_prices, price_sources, quote_errors = _fetch_realtime_prices(
-                        order_pool_df["stock_code"].tolist()
+                    close_prices, price_sources, quote_errors = (
+                        _fetch_close_prices_for_signal_date(
+                            order_pool_df["stock_code"].tolist(),
+                            signal_date,
+                        )
                     )
                     if quote_errors:
-                        with st.expander("实时价格获取详情"):
+                        with st.expander("收盘价获取详情"):
                             for err in quote_errors:
                                 st.write(f"- {err}")
 
@@ -1184,7 +1182,7 @@ def main():
                         order_pool_df,
                         total_capital=float(total_capital),
                         buy_count=target_buy_count,
-                        realtime_prices=realtime_prices,
+                        close_prices=close_prices,
                         price_sources=price_sources,
                     )
 
@@ -1195,8 +1193,8 @@ def main():
                         "rank",
                         "stock_code",
                         "stock_name",
-                        "实时价格",
-                        "价格来源",
+                        "收盘价",
+                        "收盘价来源",
                         "单票预算(元)",
                         "下单数量(股)",
                         "预计下单金额(元)",
@@ -1219,7 +1217,7 @@ def main():
                     )
 
                     if not order_rows:
-                        st.error("未生成可下单记录，请检查实时价格或资金参数")
+                        st.error("未生成可下单记录，请检查收盘价或资金参数")
                         return
 
                     total_allocated_amount = float(executable_df["预计下单金额(元)"].sum())

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "backtrader>=1.9.78.123",
+    "baostock>=0.8.9",
     "cjdata",
     "plotly>=6.6.0",
     "pyyaml>=6.0",

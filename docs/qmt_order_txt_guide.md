@@ -46,7 +46,7 @@
 
 - 先按多因子排序选出前 N 只（N=购买股票数量）
 - 总资金平均分配到 N 只股票
-- 价格来自 xtdata 实时行情，优先 `askPrice1`，缺失时回退 `lastPrice`
+- 价格来自信号日收盘价：优先 QMT `xtdata.get_market_data_ex(close)`，失败时回退 baostock `query_history_k_data_plus(close)`
 - 数量按 100 股整手向下取整
 - 预算不足 100 股或无有效价格的股票不会写入 `order.csv`
 

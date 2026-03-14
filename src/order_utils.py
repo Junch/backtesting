@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -10,8 +10,13 @@ try:
 except Exception:
     xtdata = None
 
+try:
+    import baostock as bs  # type: ignore[reportMissingImports]
+except Exception:
+    bs = None
 
-def _to_positive_float(value: object) -> Optional[float]:
+
+def _to_positive_float(value: Any) -> Optional[float]:
     """将任意对象转换为正数浮点，失败返回 None。"""
     try:
         number = float(value)
@@ -22,21 +27,151 @@ def _to_positive_float(value: object) -> Optional[float]:
     return number
 
 
-def _extract_quote_price_from_tick(tick_item: dict) -> Tuple[Optional[float], str]:
-    """优先 askPrice1，缺失时回退 lastPrice。"""
+def _to_baostock_code(stock_code: str) -> Optional[str]:
+    """将 000001.SZ 转为 baostock 代码格式。"""
+    normalized = str(stock_code).upper().strip()
+    match = re.match(r"^(\d{6})\.(SH|SZ|BJ)$", normalized)
+    if not match:
+        return None
+    numeric_code, market = match.groups()
+    return f"{market.lower()}.{numeric_code}"
 
-    ask_price = tick_item.get("askPrice1")
-    if isinstance(ask_price, (list, tuple, np.ndarray)):
-        ask_price = ask_price[0] if len(ask_price) > 0 else None
-    ask_price = _to_positive_float(ask_price)
-    if ask_price is not None:
-        return ask_price, "askPrice1"
 
-    last_price = _to_positive_float(tick_item.get("lastPrice"))
-    if last_price is not None:
-        return last_price, "lastPrice"
+def _extract_close_from_qmt_item(item: object) -> Optional[float]:
+    """从 get_market_data_ex 返回项中提取最后一个有效 close。"""
+    if not isinstance(item, pd.DataFrame) or "close" not in item.columns:
+        return None
+    if item.empty:
+        return None
 
-    return None, ""
+    close_values = pd.to_numeric(item["close"], errors="coerce").tolist()
+    for close_value in reversed(close_values):
+        close_price = _to_positive_float(close_value)
+        if close_price is not None:
+            return close_price
+    return None
+
+
+def _fetch_close_prices_from_qmt(
+    stock_codes: List[str], signal_date: pd.Timestamp
+) -> Tuple[Dict[str, float], Dict[str, str], List[str], List[str]]:
+    """通过 QMT 读取信号日收盘价。"""
+    prices: Dict[str, float] = {}
+    sources: Dict[str, str] = {}
+    errors: List[str] = []
+
+    if xtdata is None:
+        errors.append("xtquant.xtdata 不可用，跳过 QMT 收盘价读取")
+        return prices, sources, stock_codes, errors
+
+    signal_text = pd.Timestamp(signal_date).strftime("%Y%m%d")
+    try:
+        market_data = xtdata.get_market_data_ex(
+            stock_list=stock_codes,
+            period="1d",
+            start_time=signal_text,
+            end_time=signal_text,
+            dividend_type="front",
+            field_list=["close"],
+        )
+    except Exception as e:
+        errors.append(f"QMT 获取信号日收盘价失败: {e}")
+        return prices, sources, stock_codes, errors
+
+    market_data = market_data if isinstance(market_data, dict) else {}
+    unresolved_codes: List[str] = []
+    for code in stock_codes:
+        close_price = _extract_close_from_qmt_item(market_data.get(code))
+        if close_price is None:
+            unresolved_codes.append(code)
+            continue
+        prices[code] = close_price
+        sources[code] = "close_qmt"
+
+    return prices, sources, unresolved_codes, errors
+
+
+def _fetch_close_prices_from_baostock(
+    stock_codes: List[str], signal_date: pd.Timestamp
+) -> Tuple[Dict[str, float], Dict[str, str], List[str], List[str]]:
+    """通过 baostock 回退读取信号日收盘价。"""
+    prices: Dict[str, float] = {}
+    sources: Dict[str, str] = {}
+    errors: List[str] = []
+
+    if not stock_codes:
+        return prices, sources, [], errors
+
+    if bs is None:
+        errors.append("baostock 不可用，无法执行收盘价回退")
+        return prices, sources, stock_codes, errors
+
+    login_result = None
+    try:
+        login_result = bs.login()
+        if getattr(login_result, "error_code", "") != "0":
+            errors.append(
+                f"baostock 登录失败: {getattr(login_result, 'error_msg', 'unknown')}"
+            )
+            return prices, sources, stock_codes, errors
+
+        signal_ts = pd.Timestamp(signal_date).normalize()
+        start_date = (signal_ts - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+        end_date = signal_ts.strftime("%Y-%m-%d")
+        unresolved_codes: List[str] = []
+
+        for code in stock_codes:
+            bs_code = _to_baostock_code(code)
+            if bs_code is None:
+                unresolved_codes.append(code)
+                errors.append(f"{code} 无法转换为 baostock 代码格式")
+                continue
+
+            try:
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,close",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag="2",
+                )
+            except Exception as e:
+                unresolved_codes.append(code)
+                errors.append(f"{code} baostock 查询失败: {e}")
+                continue
+
+            if getattr(rs, "error_code", "") != "0":
+                unresolved_codes.append(code)
+                errors.append(
+                    f"{code} baostock 返回错误: {getattr(rs, 'error_msg', 'unknown')}"
+                )
+                continue
+
+            close_price: Optional[float] = None
+            while rs.next():
+                row_data = rs.get_row_data()
+                if len(row_data) < 2:
+                    continue
+                parsed = _to_positive_float(row_data[1])
+                if parsed is not None:
+                    close_price = parsed
+
+            if close_price is None:
+                unresolved_codes.append(code)
+                errors.append(f"{code} baostock 未返回可用收盘价")
+                continue
+
+            prices[code] = close_price
+            sources[code] = "close_baostock"
+
+        return prices, sources, unresolved_codes, errors
+    finally:
+        if login_result is not None:
+            try:
+                bs.logout()
+            except Exception:
+                pass
 
 
 def _resolve_signal_date(
@@ -91,47 +226,42 @@ def _build_order_lines(
     return rows
 
 
-def _fetch_realtime_prices(
-    stock_codes: List[str],
+def _fetch_close_prices_for_signal_date(
+    stock_codes: List[str], signal_date: pd.Timestamp
 ) -> Tuple[Dict[str, float], Dict[str, str], List[str]]:
-    """批量获取实时报价，返回价格、价格来源与错误列表。"""
+    """获取信号日收盘价，优先 QMT，失败后回退 baostock。"""
     prices: Dict[str, float] = {}
     price_sources: Dict[str, str] = {}
     errors: List[str] = []
 
-    if xtdata is None:
-        errors.append("xtquant.xtdata 不可用，请在可连接 miniQMT 的环境运行")
-        return prices, price_sources, errors
-
     valid_codes = []
+    seen_codes = set()
     for code in stock_codes:
         code_upper = str(code).upper().strip()
-        if re.match(r"^\d{6}\.(SH|SZ|BJ)$", code_upper):
+        if re.match(r"^\d{6}\.(SH|SZ|BJ)$", code_upper) and code_upper not in seen_codes:
             valid_codes.append(code_upper)
+            seen_codes.add(code_upper)
 
     if not valid_codes:
-        errors.append("没有可用于获取实时价格的合法股票代码")
+        errors.append("没有可用于获取信号日收盘价的合法股票代码")
         return prices, price_sources, errors
 
-    try:
-        tick_data = xtdata.get_full_tick(valid_codes) or {}
-    except Exception as e:
-        errors.append(f"获取 xtdata 实时行情失败: {e}")
-        return prices, price_sources, errors
+    qmt_prices, qmt_sources, unresolved_codes, qmt_errors = _fetch_close_prices_from_qmt(
+        valid_codes, pd.Timestamp(signal_date)
+    )
+    prices.update(qmt_prices)
+    price_sources.update(qmt_sources)
+    errors.extend(qmt_errors)
 
-    for code in valid_codes:
-        tick_item = tick_data.get(code)
-        if not isinstance(tick_item, dict):
-            errors.append(f"{code} 未返回 tick 数据")
-            continue
+    bs_prices, bs_sources, still_unresolved, bs_errors = _fetch_close_prices_from_baostock(
+        unresolved_codes, pd.Timestamp(signal_date)
+    )
+    prices.update(bs_prices)
+    price_sources.update(bs_sources)
+    errors.extend(bs_errors)
 
-        price, source = _extract_quote_price_from_tick(tick_item)
-        if price is None:
-            errors.append(f"{code} 缺少 askPrice1 和 lastPrice")
-            continue
-
-        prices[code] = price
-        price_sources[code] = source
+    for code in still_unresolved:
+        errors.append(f"{code} 在信号日无可用收盘价（QMT 与 baostock 均失败）")
 
     return prices, price_sources, errors
 
@@ -140,11 +270,11 @@ def _calculate_allocated_quantities(
     ranked_df: pd.DataFrame,
     total_capital: float,
     buy_count: int,
-    realtime_prices: Dict[str, float],
+    close_prices: Dict[str, float],
     price_sources: Dict[str, str],
     lot_size: int = 100,
 ) -> pd.DataFrame:
-    """基于总资金和实时价格计算每只股票下单数量。"""
+    """基于总资金和信号日收盘价计算每只股票下单数量。"""
     result_df = ranked_df.copy()
     per_stock_budget = total_capital / buy_count if buy_count > 0 else 0.0
 
@@ -156,7 +286,7 @@ def _calculate_allocated_quantities(
 
     for _, row in result_df.iterrows():
         stock_code = str(row.get("stock_code", "")).upper().strip()
-        price = realtime_prices.get(stock_code)
+        price = close_prices.get(stock_code)
         source = price_sources.get(stock_code, "")
 
         if price is None or price <= 0:
@@ -164,7 +294,7 @@ def _calculate_allocated_quantities(
             allocated_amounts.append(0.0)
             used_prices.append(np.nan)
             used_price_sources.append("")
-            notes.append("无可用实时价格")
+            notes.append("无可用信号日收盘价")
             continue
 
         raw_qty = int(per_stock_budget / price)
@@ -185,8 +315,8 @@ def _calculate_allocated_quantities(
         notes.append("")
 
     result_df["单票预算(元)"] = per_stock_budget
-    result_df["实时价格"] = used_prices
-    result_df["价格来源"] = used_price_sources
+    result_df["收盘价"] = used_prices
+    result_df["收盘价来源"] = used_price_sources
     result_df["下单数量(股)"] = quantities
     result_df["预计下单金额(元)"] = allocated_amounts
     result_df["下单备注"] = notes
