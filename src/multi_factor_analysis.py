@@ -1236,18 +1236,25 @@ def main():
                     csv.writer(order_buffer, lineterminator="\n").writerows(order_rows)
                     order_content = order_buffer.getvalue()
 
-                    order_file_path = os.path.join(os.path.dirname(__file__), "order.csv")
+                    order_filename = (
+                        f"order_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                    )
+                    order_file_path = os.path.join(
+                        os.path.dirname(__file__), order_filename
+                    )
                     with open(order_file_path, "w", newline="", encoding="utf-8") as f:
                         csv.writer(f, lineterminator="\n").writerows(order_rows)
 
                     st.info(
-                        f"已生成次日买入清单，日期: {next_trade_date.strftime('%Y-%m-%d')}，共 {len(order_rows)} 条"
+                            "已生成次日买入清单，"
+                            f"日期: {next_trade_date.strftime('%Y-%m-%d')}，"
+                            f"文件: {order_filename}，共 {len(order_rows)} 条"
                     )
                     st.code(order_content, language="text")
                     st.download_button(
-                        "⬇️ 下载 order.csv",
+                            "⬇️ 下载订单 CSV",
                         data=order_content.encode("utf-8"),
-                        file_name="order.csv",
+                            file_name=order_filename,
                         mime="text/csv",
                         width="stretch",
                     )
