@@ -541,12 +541,12 @@ def main():
                     if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
                         if {
                             "stock_code",
-                            "listed_date",
+                            "list_date",
                         }.issubset(basic_df.columns) and enable_listing_age_filter:
                             listed_dates = (
                                 basic_df.dropna(subset=["stock_code"])
                                 .drop_duplicates(subset=["stock_code"])
-                                .set_index("stock_code")["listed_date"]
+                                .set_index("stock_code")["list_date"]
                             )
                             listed_dates = pd.Series(listed_dates)
 
@@ -783,7 +783,7 @@ def main():
                             for filter_desc in active_filters:
                                 st.write(f"- {filter_desc}")
                             if enable_listing_age_filter:
-                                st.write("- 上市日期来源: stock_basic.listed_date")
+                                st.write("- 上市日期来源: stock_basic.list_date")
                         else:
                             st.write("- 前置过滤: 未启用")
 
@@ -1005,12 +1005,12 @@ def main():
                     if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
                         if enable_listing_age_filter and {
                             "stock_code",
-                            "listed_date",
+                            "list_date",
                         }.issubset(basic_df.columns):
                             listed_dates = (
                                 basic_df.dropna(subset=["stock_code"])
                                 .drop_duplicates(subset=["stock_code"])
-                                .set_index("stock_code")["listed_date"]
+                                .set_index("stock_code")["list_date"]
                             )
                             listed_dates = pd.Series(listed_dates)
 

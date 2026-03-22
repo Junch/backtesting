@@ -546,12 +546,12 @@ def main():
                     if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
                         if {
                             "stock_code",
-                            "listed_date",
+                            "list_date",
                         }.issubset(basic_df.columns):
                             listed_dates = (
                                 basic_df.dropna(subset=["stock_code"])
                                 .drop_duplicates(subset=["stock_code"])
-                                .set_index("stock_code")["listed_date"]
+                                .set_index("stock_code")["list_date"]
                             )
                             listed_dates = pd.Series(listed_dates)
 
@@ -716,7 +716,7 @@ def main():
                             st.write(f"- {filter_desc}")
                         if enable_listing_age_filter:
                             st.write(
-                                "- 上市日期来源: stock_basic.listed_date(缺失时回退首个交易日)"
+                                "- 上市日期来源: stock_basic.list_date(缺失时回退首个交易日)"
                             )
                     else:
                         st.write("- 前置过滤: 未启用")
