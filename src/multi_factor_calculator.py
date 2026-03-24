@@ -479,10 +479,17 @@ def run_multi_factor_backtesting(
             break
 
         # 仅使用当日可见信息生成信号，避免读取下一交易日数据导致前视偏差
-        valid_stocks = df[
-            (df["trade_date"] == all_trade_dates[i])
-            & (df[composite_factor_col].notna())
-        ]  # 过滤掉复合因子值为空的股票
+        if "is_constituent" in df.columns:
+            valid_stocks = df[
+                (df["trade_date"] == all_trade_dates[i])
+                & (df[composite_factor_col].notna())
+                & (df["is_constituent"])
+            ]  # 过滤掉因子值为空的股票
+        else:
+            valid_stocks = df[
+                (df["trade_date"] == all_trade_dates[i])
+                & (df[composite_factor_col].notna())
+            ]  # 过滤掉因子值为空的股票
 
         if filter_pipeline:
             filter_context = StockFilterContext(

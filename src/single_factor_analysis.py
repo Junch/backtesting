@@ -1,8 +1,19 @@
 import backtrader as bt
 from datetime import datetime
 import warnings
+import logging
 
 warnings.filterwarnings("ignore")
+
+# 配置日志
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("backtest_debug.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
 import sys
 import os
 import argparse
@@ -334,9 +345,17 @@ def run_single_factor_backtesting(
             break
 
         # 仅使用当日可见信息生成信号，避免读取下一交易日数据导致前视偏差
-        valid_stocks = df[
-            (df["trade_date"] == all_trade_dates[i]) & (df[factor_col].notna())
-        ]  # 过滤掉因子值为空的股票
+        if "is_constituent" in df.columns:
+            valid_stocks = df[
+                (df["trade_date"] == all_trade_dates[i])
+                & (df[factor_col].notna())
+                & (df["is_constituent"])
+            ]  # 过滤掉因子值为空的股票
+        else:
+            valid_stocks = df[
+                (df["trade_date"] == all_trade_dates[i])
+                & (df[factor_col].notna())
+            ]  # 过滤掉因子值为空的股票
 
         if filter_pipeline:
             filter_context = StockFilterContext(
@@ -536,13 +555,26 @@ def main():
                 pre_start_date = (
                     start_ts - pd.Timedelta(days=pre_lookback_days)
                 ).strftime("%Y%m%d")
-                df = findata.get_stock_data_frame_in_sector(
-                    sector_name, pre_start_date, end_str, adj="hfq"
-                )
+
+                support_variable_index = sector_name in ["中证500"]
+                if support_variable_index:
+                    df = findata.get_index_data_frame_in_range(
+                        sector_name, pre_start_date, end_str, adj="hfq"
+                    )
+                else:
+                    df = findata.get_stock_data_frame_in_sector(
+                        sector_name, pre_start_date, end_str, adj="hfq"
+                    )
 
                 listed_dates = None
                 if enable_listing_age_filter:
-                    basic_df = findata.get_stock_basic_by_sector(sector_name)
+                    if support_variable_index:
+                        basic_df = findata.get_index_basic_by_range(
+                            sector_name, pre_start_date, end_str
+                        )
+                    else:
+                        basic_df = findata.get_stock_basic_by_sector(sector_name)
+
                     if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
                         if {
                             "stock_code",
@@ -610,12 +642,14 @@ def main():
                     _name="stock_trade_analyzer",
                     data_source=findata,
                 )
-                cerebro.addanalyzer(bt.analyzers.SharpeRatio,
-                                     _name="sharpe_ratio",
-                                     timeframe=bt.TimeFrame.Days,
-                                     annualize=True,    
-                                     riskfreerate=0.015,
-                                     factor=242) # 中国股市一年大约 242 个交易日
+                cerebro.addanalyzer(
+                    bt.analyzers.SharpeRatio,
+                    _name="sharpe_ratio",
+                    timeframe=bt.TimeFrame.Days,
+                    annualize=True,
+                    riskfreerate=0.015,
+                    factor=242,
+                )  # 中国股市一年大约 242 个交易日
                 cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
                 cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
 
@@ -631,6 +665,10 @@ def main():
 
                 # 获取策略实例和分析结果
                 strat = results[0]
+
+                # 显示日志文件路径
+                if hasattr(strat, "log_file"):
+                    st.info(f"交易日志已保存到: {strat.log_file}")
 
                 # 获取交易分析器
                 trade_analyzer = strat.analyzers.stock_trade_analyzer

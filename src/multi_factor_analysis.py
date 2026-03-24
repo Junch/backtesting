@@ -529,15 +529,28 @@ def main():
                     pre_start_date = (
                         start_ts - pd.Timedelta(days=pre_lookback_days)
                     ).strftime("%Y%m%d")
-                    df = findata.get_stock_data_frame_in_sector(
-                        sector_name, pre_start_date, end_str, adj="hfq"
-                    )
+
+                    support_variable_index = sector_name in ["中证500"]
+                    if support_variable_index:
+                        df = findata.get_index_data_frame_in_range(
+                            sector_name, pre_start_date, end_str, adj="hfq"
+                        )
+                    else:
+                        df = findata.get_stock_data_frame_in_sector(
+                            sector_name, pre_start_date, end_str, adj="hfq"
+                        )
 
                     listed_dates = None
                     stock_name_map: Dict[str, str] = {}
                     industry_sw1_map: Dict[str, str] = {}
                     industry_sw2_map: Dict[str, str] = {}
-                    basic_df = findata.get_stock_basic_by_sector(sector_name)
+
+                    if support_variable_index:
+                        basic_df = findata.get_index_basic_by_range(
+                            sector_name, pre_start_date, end_str
+                        )
+                    else:
+                        basic_df = findata.get_stock_basic_by_sector(sector_name)
                     if isinstance(basic_df, pd.DataFrame) and not basic_df.empty:
                         if {
                             "stock_code",

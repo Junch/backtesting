@@ -368,7 +368,7 @@ def main() -> None:
     parser.add_argument(
         "--price-mode",
         choices=["limit", "current"],
-        default="limit",
+        default="current",
         help="价格模式: limit(默认，涨跌停逻辑)/current(当前市价)",
     )
     args = parser.parse_args()

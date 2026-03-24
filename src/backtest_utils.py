@@ -9,6 +9,7 @@ from pyecharts import options as opts
 from pyecharts.charts import Line
 from pyecharts.globals import ThemeType
 import os
+import math
 import pandas as pd
 import logging
 from datetime import datetime
@@ -48,7 +49,11 @@ class StockTradeAnalyzer(bt.Analyzer):
     分析每只股票的详细交易记录和盈亏情况
     """
 
-    params = (("data_source", None),)
+    params = (
+        ("data_source", None),
+        ("log_daily", True),
+        ("log_file", None),
+    )
 
     def __init__(self):
         self.initial_cash = None
@@ -57,6 +62,24 @@ class StockTradeAnalyzer(bt.Analyzer):
         self.portfolio_value = []
         self.portfolio_dates = []
         self.data_source = self.p.data_source
+        self._day_trades = []  # 当日成交记录(由notify_order填充)
+        self._log_fh = None
+
+        if self.p.log_daily:
+            log_path = self.p.log_file
+            if log_path is None:
+                log_dir = os.path.join(os.getcwd(), "log")
+                os.makedirs(log_dir, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                log_path = os.path.join(log_dir, f"analyzer_{ts}.log")
+            self._log_fh = open(log_path, "a", encoding="utf-8")
+
+    def _log(self, msg):
+        """写入日志(控制台+文件)"""
+        print(msg)
+        if self._log_fh:
+            self._log_fh.write(msg + "\n")
+            self._log_fh.flush()
 
     def set_data_source(self, data_source):
         """设置数据源，用于获取股票名称"""
@@ -65,15 +88,56 @@ class StockTradeAnalyzer(bt.Analyzer):
     def start(self):
         """分析开始时初始化"""
         self.initial_cash = self.strategy.broker.getvalue()
+        self._log(
+            f"[START] 初始资金: {self.initial_cash:,.2f} 元 | 数据源数量: {len(self.strategy.datas)}"
+        )
 
     def next(self):
         """每个交易日记录组合价值"""
-        self.portfolio_value.append(self.strategy.broker.getvalue())
+        portfolio_val = self.strategy.broker.getvalue()
+        self.portfolio_value.append(portfolio_val)
         try:
             dt = self.strategy.datas[0].datetime.datetime(0)
         except Exception:
             dt = None
         self.portfolio_dates.append(dt)
+
+        if self.p.log_daily:
+            date_str = dt.strftime("%Y-%m-%d") if dt else "N/A"
+            # 统计当前持仓（只遍历已有positions，避免触发defaultdict创建新条目）
+            positions = []
+            for data, pos in self.strategy.broker.positions.items():
+                if pos.size > 0:
+                    name = getattr(data, "_name", "?")
+                    positions.append(f"{name}({pos.size})")
+            pos_str = ", ".join(positions) if positions else "空仓"
+            # 计算日收益率
+            if len(self.portfolio_value) > 1 and self.portfolio_value[-2] > 0:
+                daily_ret = (portfolio_val / self.portfolio_value[-2] - 1) * 100
+            else:
+                daily_ret = 0.0
+            # 输出当日成交
+            trade_info = ""
+            if self._day_trades:
+                trade_info = " | 成交: " + "; ".join(self._day_trades)
+            self._log(
+                f"[{date_str}] 资产: {portfolio_val:,.2f} | 日收益: {daily_ret:+.4f}% | "
+                f"持仓: {pos_str}{trade_info}"
+            )
+
+            # NaN 诊断：输出每只股票的 close 和 position size
+            if math.isnan(portfolio_val):
+                self._log(f"  >>> NaN 诊断:")
+                for data in self.strategy.datas:
+                    name = getattr(data, "_name", "?")
+                    try:
+                        close_p = data.close[0]
+                    except Exception:
+                        close_p = "N/A"
+                    pos = self.strategy.broker.getposition(data)
+                    self._log(f"    {name}: close={close_p} size={pos.size}")
+
+            self._day_trades = []
 
     def notify_order(self, order):
         """订单状态通知"""
@@ -112,7 +176,10 @@ class StockTradeAnalyzer(bt.Analyzer):
                 }
             )
             trade_record["total_buy_value"] += buy_value
-            # print(f"{self.strategy.datas[0].datetime.date(0)} 买入{stock_code}({stock_name}), 成交价{order.executed.price:.2f}, 成交量{order.executed.size}, 佣金{order.executed.comm:.2f}")
+            if self.p.log_daily:
+                self._day_trades.append(
+                    f"BUY {stock_code}({stock_name}) @{order.executed.price:.2f} x {order.executed.size} val={buy_value:,.2f} comm={order.executed.comm:.2f}"
+                )
         else:
             sell_value = order.executed.price * abs(order.executed.size)
             trade_record["sell_orders"].append(
@@ -124,7 +191,10 @@ class StockTradeAnalyzer(bt.Analyzer):
                 }
             )
             trade_record["total_sell_value"] += sell_value
-            # print(f"{self.strategy.datas[0].datetime.date(0)} 卖出{stock_code}({stock_name}), 成交价{order.executed.price:.2f}, 成交量{abs(order.executed.size)}, 佣金{order.executed.comm:.2f}")
+            if self.p.log_daily:
+                self._day_trades.append(
+                    f"SELL {stock_code}({stock_name}) @{order.executed.price:.2f} x {abs(order.executed.size)} val={sell_value:,.2f} comm={order.executed.comm:.2f}"
+                )
 
     def stop(self):
         """分析结束时计算并输出盈亏统计"""
@@ -249,8 +319,18 @@ class StockTradeAnalyzer(bt.Analyzer):
 
             print(f"\n✅ 股票分析数据已保存到 analyzer.stock_analysis_df")
             print(f"📊 DataFrame 形状: {self.stock_analysis_df.shape}")
+
+            self._log(
+                f"[STOP] 交易股票: {traded_stocks} | 初始: {self.initial_cash:,.2f} | "
+                f"最终: {final_value:,.2f} | 总收益: {total_return:.2f}% | 佣金: {self.total_commission:.2f}"
+            )
         else:
             print("无法计算总盈亏：未记录初始资金")
+            self._log("[STOP] 无法计算总盈亏：未记录初始资金")
+
+        if self._log_fh:
+            self._log_fh.close()
+            self._log_fh = None
 
     def get_analysis(self):
         """获取分析结果"""
@@ -344,7 +424,9 @@ class DateStrategy(bt.Strategy):
                 data_obj = self.find_data_by_stock_code(stock_code)
                 is_tradeable = self._is_tradeable(data_obj) if data_obj else False
                 if data_obj and is_tradeable:
-                    self.order_target_percent(data=data_obj, target=0.9 / len(stock_list))
+                    self.order_target_percent(
+                        data=data_obj, target=0.9 / len(stock_list)
+                    )
                 elif data_obj and not is_tradeable:
                     self.log(f"跳过买入 {stock_code}: 执行日停牌或不可交易, 不补单")
 
@@ -365,11 +447,11 @@ class DateStrategy(bt.Strategy):
 
     def check_stop_loss(self):
         """检查并执行止损"""
-        for data in self.datas:
+        for data in list(self.entry_prices.keys()):
             position = self.broker.getposition(data)
 
             # 只对持有的股票检查止损
-            if position.size > 0 and data in self.entry_prices:
+            if position.size > 0:
                 current_price = data.close[0]
                 entry_price = self.entry_prices[data]
 
